@@ -565,8 +565,12 @@
             const apiKey = apiKeys[keyIndex];
 
             for (let attempt = 0; attempt < maxRetries; attempt++) {
+                let usageReservationId = null;
                 try {
                     const endpoint = `${baseUrl.replace(/\/$/, '')}/chat/completions`;
+                    const builtBody = buildChatGPTRequestBody(model, prompt, { reasoningProfile });
+                    const guardedRequest = beginTrackedOpenAIRequest(baseUrl, model, builtBody, 'chat');
+                    usageReservationId = guardedRequest.reservationId;
 
                     const response = await window.ivLyricsFetch(endpoint, {
                         method: 'POST',
@@ -574,10 +578,12 @@
                             'Content-Type': 'application/json',
                             'Authorization': `Bearer ${apiKey}`
                         },
-                        body: JSON.stringify(buildChatGPTRequestBody(model, prompt, { reasoningProfile }))
+                        body: JSON.stringify(guardedRequest.body)
                     }, requestTimeoutMs);
 
                     if (response.status === 429 || response.status === 403) {
+                        cancelTrackedOpenAIRequest(baseUrl, usageReservationId);
+                        usageReservationId = null;
                         window.__ivLyricsDebugLog?.(`[ChatGPT Addon] API key ${keyIndex + 1} failed (${response.status}), trying next...`);
                         break; // Try next key
                     }
@@ -605,6 +611,8 @@
                     }
 
                     const data = await response.json();
+                    completeTrackedOpenAIRequest(baseUrl, model, usageReservationId, data?.usage);
+                    usageReservationId = null;
                     const rawText = readChatGPTResponseText(data);
 
                     if (!rawText.trim()) {
@@ -616,6 +624,8 @@
                         : rawText;
 
                 } catch (e) {
+                    cancelTrackedOpenAIRequest(baseUrl, usageReservationId);
+                    usageReservationId = null;
                     lastError = e;
                     window.__ivLyricsDebugLog?.(`[ChatGPT Addon] Attempt ${attempt + 1} failed:`, e.message);
 
