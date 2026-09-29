@@ -8596,6 +8596,79 @@
         );
     }
 
+    function resolveTranslationSourceLanguage(text, sourceLang = null) {
+        if (sourceLang) return sourceLang;
+        try {
+            return window.LyricsService?.detectLanguage?.(
+                String(text || '').split('\n').map(line => ({ text: line }))
+            ) || 'auto';
+        } catch {
+            return 'auto';
+        }
+    }
+
+    function resolveTranslationTrackContext({ title = '', artist = '', album = '' } = {}) {
+        const item = Spicetify.Player?.data?.item || null;
+        const metadata = item?.metadata || {};
+        const currentTitle = title || metadata.title || item?.name || '';
+        const currentArtist = artist
+            || metadata.artist_name
+            || (Array.isArray(item?.artists)
+                ? item.artists.map(entry => typeof entry === 'string' ? entry : entry?.name).filter(Boolean).join(', ')
+                : '');
+        const currentAlbum = album
+            || metadata.album_title
+            || item?.album?.name
+            || (typeof metadata.album === 'string' ? metadata.album : metadata.album?.name)
+            || '';
+        return {
+            title: String(currentTitle || ''),
+            artist: String(currentArtist || ''),
+            album: String(currentAlbum || '')
+        };
+    }
+
+    function getTranslationCacheSourceHash({
+        text,
+        isPhonetic = false,
+        pronunciationNotation = null,
+        translationStyle = null,
+        title = '',
+        artist = '',
+        album = '',
+        sourceLang = null
+    } = {}) {
+        const sourceTextHash = getLyricsTextCacheHash(text);
+        if (isPhonetic) {
+            const notation = normalizeServicePronunciationNotation(
+                pronunciationNotation || getServicePronunciationNotation()
+            );
+            return `${sourceTextHash}:phonetic-prompt=${PHONETIC_PROMPT_CACHE_VERSION}:notation=${notation}`;
+        }
+
+        const style = translationStyle
+            || window.AIAddonManager?.getTranslationStyle?.()
+            || 'natural';
+        const resolvedSourceLang = resolveTranslationSourceLanguage(text, sourceLang);
+        const context = resolveTranslationTrackContext({ title, artist, album });
+        const glossaryEntries = window.AIAddonManager?.getTranslationEntityGlossary?.() || [];
+        const contextHash = getLyricsTextCacheHash(JSON.stringify({
+            ...context,
+            sourceLang: String(resolvedSourceLang || 'auto'),
+            glossary: glossaryEntries
+        }));
+        return `${sourceTextHash}:translation-prompt=${TRANSLATION_PROMPT_CACHE_VERSION}:style=${style}:context=${contextHash}`;
+    }
+
+    window.ivLyricsTranslationCache = {
+        ...(window.ivLyricsTranslationCache || {}),
+        getSourceHash: getTranslationCacheSourceHash,
+        resolveTrackContext: resolveTranslationTrackContext,
+        resolveSourceLanguage: resolveTranslationSourceLanguage,
+        translationPromptVersion: TRANSLATION_PROMPT_CACHE_VERSION,
+        phoneticPromptVersion: PHONETIC_PROMPT_CACHE_VERSION
+    };
+
     // 진행 중인 요청 키 생성
     function getTranslatorRequestKey(trackId, wantSmartPhonetic, lang, provider = null, sourceHash = null) {
         const providerKey = provider || '';
@@ -8939,7 +9012,6 @@
             sourceLang = null,
         }) {
             if (!text?.trim()) throw new Error("No text provided for translation");
-            const sourceTextHash = getLyricsTextCacheHash(text);
             const resolvedPronunciationNotation = wantSmartPhonetic
                 ? normalizeServicePronunciationNotation(
                     pronunciationNotation || getServicePronunciationNotation()
@@ -8948,30 +9020,16 @@
             const translationStyle = wantSmartPhonetic
                 ? null
                 : (window.AIAddonManager?.getTranslationStyle?.() || 'natural');
-            const resolvedSourceLang = sourceLang || (() => {
-                try {
-                    return window.LyricsService?.detectLanguage?.(
-                        String(text).split('\n').map(line => ({ text: line }))
-                    ) || 'auto';
-                } catch {
-                    return 'auto';
-                }
-            })();
-            const glossaryEntries = wantSmartPhonetic
-                ? []
-                : (window.AIAddonManager?.getTranslationEntityGlossary?.() || []);
-            const translationContextHash = wantSmartPhonetic
-                ? ''
-                : getLyricsTextCacheHash(JSON.stringify({
-                    title: String(title || ''),
-                    artist: String(artist || ''),
-                    album: String(album || ''),
-                    sourceLang: String(resolvedSourceLang || 'auto'),
-                    glossary: glossaryEntries
-                }));
-            const sourceHash = wantSmartPhonetic
-                ? `${sourceTextHash}:phonetic-prompt=${PHONETIC_PROMPT_CACHE_VERSION}:notation=${resolvedPronunciationNotation}`
-                : `${sourceTextHash}:translation-prompt=${TRANSLATION_PROMPT_CACHE_VERSION}:style=${translationStyle}:context=${translationContextHash}`;
+            const resolvedSourceLang = resolveTranslationSourceLanguage(text, sourceLang);
+            const trackContext = resolveTranslationTrackContext({ title, artist, album });
+            const sourceHash = getTranslationCacheSourceHash({
+                text,
+                isPhonetic: wantSmartPhonetic,
+                pronunciationNotation: resolvedPronunciationNotation,
+                translationStyle,
+                ...trackContext,
+                sourceLang: resolvedSourceLang
+            });
 
             let finalTrackId = trackId;
             if (!finalTrackId) {
@@ -9018,9 +9076,9 @@
                     try {
                         const result = await window.AIAddonManager.translateLyrics({
                             trackId: finalTrackId,
-                            artist,
-                            title,
-                            album,
+                            artist: trackContext.artist,
+                            title: trackContext.title,
+                            album: trackContext.album,
                             text,
                             lang: userLang,
                             wantSmartPhonetic,
