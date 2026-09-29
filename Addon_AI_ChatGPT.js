@@ -251,6 +251,32 @@
         return getSetting('model', null);
     }
 
+    function isOfficialOpenAIBaseUrl(baseUrl) {
+        return normalizeBaseUrl(baseUrl) === DEFAULT_OPENAI_BASE_URL;
+    }
+
+    function beginTrackedOpenAIRequest(baseUrl, model, body, apiMode) {
+        if (!isOfficialOpenAIBaseUrl(baseUrl) || !window.OpenAIUsageTracker?.beginRequest) {
+            return { body, reservationId: null };
+        }
+        return window.OpenAIUsageTracker.beginRequest({ model, body, apiMode });
+    }
+
+    function completeTrackedOpenAIRequest(baseUrl, model, reservationId, usage) {
+        if (!isOfficialOpenAIBaseUrl(baseUrl) || !window.OpenAIUsageTracker?.completeRequest) return;
+        window.OpenAIUsageTracker.completeRequest(reservationId, { model, usage });
+    }
+
+    function cancelTrackedOpenAIRequest(baseUrl, reservationId) {
+        if (!reservationId || !isOfficialOpenAIBaseUrl(baseUrl)) return;
+        window.OpenAIUsageTracker?.cancelRequest?.(reservationId);
+    }
+
+    function formatTokenCount(value) {
+        const number = Math.max(0, Number(value) || 0);
+        return new Intl.NumberFormat(undefined, { maximumFractionDigits: 1, notation: number >= 10000 ? 'compact' : 'standard' }).format(number);
+    }
+
 
     function parseConnectionKeys(raw) {
         if (Array.isArray(raw)) return raw.filter(key => typeof key === 'string').map(key => key.trim()).filter(Boolean);
@@ -539,8 +565,12 @@
             const apiKey = apiKeys[keyIndex];
 
             for (let attempt = 0; attempt < maxRetries; attempt++) {
+                let usageReservationId = null;
                 try {
                     const endpoint = `${baseUrl.replace(/\/$/, '')}/chat/completions`;
+                    const builtBody = buildChatGPTRequestBody(model, prompt, { reasoningProfile });
+                    const guardedRequest = beginTrackedOpenAIRequest(baseUrl, model, builtBody, 'chat');
+                    usageReservationId = guardedRequest.reservationId;
 
                     const response = await window.ivLyricsFetch(endpoint, {
                         method: 'POST',
@@ -548,10 +578,12 @@
                             'Content-Type': 'application/json',
                             'Authorization': `Bearer ${apiKey}`
                         },
-                        body: JSON.stringify(buildChatGPTRequestBody(model, prompt, { reasoningProfile }))
+                        body: JSON.stringify(guardedRequest.body)
                     }, requestTimeoutMs);
 
                     if (response.status === 429 || response.status === 403) {
+                        cancelTrackedOpenAIRequest(baseUrl, usageReservationId);
+                        usageReservationId = null;
                         window.__ivLyricsDebugLog?.(`[ChatGPT Addon] API key ${keyIndex + 1} failed (${response.status}), trying next...`);
                         break; // Try next key
                     }
@@ -579,6 +611,8 @@
                     }
 
                     const data = await response.json();
+                    completeTrackedOpenAIRequest(baseUrl, model, usageReservationId, data?.usage);
+                    usageReservationId = null;
                     const rawText = readChatGPTResponseText(data);
 
                     if (!rawText.trim()) {
@@ -590,9 +624,12 @@
                         : rawText;
 
                 } catch (e) {
+                    cancelTrackedOpenAIRequest(baseUrl, usageReservationId);
+                    usageReservationId = null;
                     lastError = e;
                     window.__ivLyricsDebugLog?.(`[ChatGPT Addon] Attempt ${attempt + 1} failed:`, e.message);
 
+                    if (e.code === 'IVLYRICS_DAILY_TOKEN_LIMIT') throw e;
                     if (e.message.includes('Invalid API key') || e.message.includes('permission denied')) {
                         throw e;
                     }
@@ -687,6 +724,8 @@
                 let emittedLineCount = 0;
                 let emittedProvisionalOutput = false;
                 let receivedStreamText = false;
+                let usageReservationId = null;
+                let responsesUsage = null;
                 const resetProvisionalOutput = (reason, error = null) => {
                     if (!emittedProvisionalOutput && !receivedStreamText) return;
                     try {
@@ -705,16 +744,23 @@
 
                 try {
                     const endpoint = `${normalizeBaseUrl(baseUrl)}/responses`;
+                    const builtBody = buildResponsesRequestBody(model, prompt, { reasoningProfile });
+                    const guardedRequest = beginTrackedOpenAIRequest(baseUrl, model, builtBody, 'responses');
+                    usageReservationId = guardedRequest.reservationId;
                     const response = await window.ivLyricsFetch(endpoint, {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json',
                             'Authorization': `Bearer ${apiKey}`
                         },
-                        body: JSON.stringify(buildResponsesRequestBody(model, prompt, { reasoningProfile }))
+                        body: JSON.stringify(guardedRequest.body)
                     }, requestTimeoutMs);
 
-                    if (response.status === 429 || response.status === 403) break;
+                    if (response.status === 429 || response.status === 403) {
+                        cancelTrackedOpenAIRequest(baseUrl, usageReservationId);
+                        usageReservationId = null;
+                        break;
+                    }
                     if (!response.ok) {
                         let errorData = null;
                         try { errorData = await response.json(); } catch { }
@@ -724,6 +770,8 @@
                     const contentType = String(response.headers?.get?.('content-type') || '').toLowerCase();
                     if (!response.body || !contentType.includes('text/event-stream')) {
                         const data = await response.json();
+                        completeTrackedOpenAIRequest(baseUrl, model, usageReservationId, data?.usage);
+                        usageReservationId = null;
                         const rawText = readResponsesOutputText(data);
                         if (!rawText.trim()) throw new Error('[ChatGPT Web Search] Empty response from API');
                         if (typeof onRawChunk === 'function') {
@@ -776,6 +824,7 @@
                         }
                         if (event.type === 'response.completed') {
                             completed = true;
+                            responsesUsage = event.response?.usage || responsesUsage;
                             if (!accumulated) appendText(readResponsesOutputText(event.response));
                         }
                     };
@@ -812,6 +861,8 @@
 
                     if (!completed) throw new Error('[ChatGPT Web Search] Responses API stream ended before completion');
                     if (!accumulated.trim()) throw new Error('[ChatGPT Web Search] Empty response from streaming API');
+                    completeTrackedOpenAIRequest(baseUrl, model, usageReservationId, responsesUsage);
+                    usageReservationId = null;
 
                     const transformed = typeof transformResult === 'function'
                         ? transformResult(accumulated)
@@ -821,9 +872,12 @@
                     }
                     return transformed;
                 } catch (error) {
+                    cancelTrackedOpenAIRequest(baseUrl, usageReservationId);
+                    usageReservationId = null;
                     lastError = error;
                     window.__ivLyricsDebugLog?.(`[ChatGPT Addon] Responses API attempt ${attempt + 1} failed:`, error.message);
                     resetProvisionalOutput(attempt < maxRetries - 1 ? 'retry' : 'failed', error);
+                    if (error.code === 'IVLYRICS_DAILY_TOKEN_LIMIT') throw error;
                     if (/invalid api key|permission denied/i.test(error.message)) throw error;
                     if (attempt < maxRetries - 1) await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
                 }
@@ -864,6 +918,8 @@
                 let emittedLineCount = 0;
                 let emittedProvisionalOutput = false;
                 let receivedStreamText = false;
+                let usageReservationId = null;
+                let streamUsage = null;
                 const resetProvisionalOutput = (reason, error = null) => {
                     if (!emittedProvisionalOutput && !receivedStreamText) return;
 
@@ -886,6 +942,12 @@
 
                 try {
                     const endpoint = `${baseUrl.replace(/\/$/, '')}/chat/completions`;
+                    const builtBody = buildChatGPTRequestBody(model, prompt, { stream: true, reasoningProfile });
+                    if (isOfficialOpenAIBaseUrl(baseUrl)) {
+                        builtBody.stream_options = { ...(builtBody.stream_options || {}), include_usage: true };
+                    }
+                    const guardedRequest = beginTrackedOpenAIRequest(baseUrl, model, builtBody, 'chat');
+                    usageReservationId = guardedRequest.reservationId;
 
                     const response = await window.ivLyricsFetch(endpoint, {
                         method: 'POST',
@@ -893,10 +955,12 @@
                             'Content-Type': 'application/json',
                             'Authorization': `Bearer ${apiKey}`
                         },
-                        body: JSON.stringify(buildChatGPTRequestBody(model, prompt, { stream: true, reasoningProfile }))
+                        body: JSON.stringify(guardedRequest.body)
                     }, requestTimeoutMs);
 
                     if (response.status === 429 || response.status === 403) {
+                        cancelTrackedOpenAIRequest(baseUrl, usageReservationId);
+                        usageReservationId = null;
                         window.__ivLyricsDebugLog?.(`[ChatGPT Addon] Stream: API key ${keyIndex + 1} failed (${response.status}), trying next...`);
                         break;
                     }
@@ -919,6 +983,8 @@
                     const contentType = String(response.headers?.get?.('content-type') || '').toLowerCase();
                     if (!response.body || !contentType.includes('text/event-stream')) {
                         const data = await response.json();
+                        completeTrackedOpenAIRequest(baseUrl, model, usageReservationId, data?.usage);
+                        usageReservationId = null;
                         const rawText = readChatGPTResponseText(data);
                         if (!rawText.trim()) throw new Error('[ChatGPT] Empty response from API');
                         if (typeof onRawChunk === 'function') {
@@ -950,6 +1016,7 @@
                         if (!payload || payload === '[DONE]') return;
 
                         const parsed = JSON.parse(payload);
+                        if (parsed?.usage) streamUsage = parsed.usage;
                         const chunk = readChatGPTStreamChunk(parsed);
                         if (chunk.text) {
                             accumulated += chunk.text;
@@ -998,6 +1065,8 @@
                         throw createChatGPTResponseError(finalFinishReason);
                     }
                     if (!accumulated.trim()) throw new Error('[ChatGPT] Empty response from streaming API');
+                    completeTrackedOpenAIRequest(baseUrl, model, usageReservationId, streamUsage);
+                    usageReservationId = null;
 
                     const transformed = typeof transformResult === 'function'
                         ? transformResult(accumulated)
@@ -1018,9 +1087,12 @@
                     return transformed;
 
                 } catch (e) {
+                    cancelTrackedOpenAIRequest(baseUrl, usageReservationId);
+                    usageReservationId = null;
                     lastError = e;
                     window.__ivLyricsDebugLog?.(`[ChatGPT Addon] Stream attempt ${attempt + 1} failed:`, e.message);
                     resetProvisionalOutput(attempt < maxRetries - 1 ? 'retry' : 'failed', e);
+                    if (e.code === 'IVLYRICS_DAILY_TOKEN_LIMIT') throw e;
                     if (e.message.includes('Invalid API key') || e.message.includes('permission denied')) throw e;
                     if (attempt < maxRetries - 1) await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
                 }
@@ -1123,6 +1195,154 @@
     // ============================================
     // Addon Implementation
     // ============================================
+
+    function isBackgroundGlossaryEnabled() {
+        const value = getSetting('background-glossary-enabled', true);
+        return value === true || value === 'true';
+    }
+
+    function isBackgroundGlossaryWebSearchEnabled() {
+        const value = getSetting('background-glossary-web-search', false);
+        return value === true || value === 'true';
+    }
+
+    function getBackgroundGlossaryModel() {
+        return String(getSetting('background-glossary-model', 'gpt-5.6-terra') || 'gpt-5.6-terra').trim();
+    }
+
+    function buildBackgroundGlossaryPrompt(params = {}) {
+        const targetLanguage = String(params.lang || 'ko').trim();
+        const sourceLanguage = String(params.sourceLang || 'auto').trim();
+        const lyrics = String(params.text || '').slice(0, 16000);
+        const existing = [
+            ...(Array.isArray(params.existingGlossary) ? params.existingGlossary : []),
+            ...(Array.isArray(params.autoGlossary) ? params.autoGlossary : [])
+        ].slice(0, 160).map(entry => ({ source: entry.source, target: entry.target, work: entry.work || '' }));
+        const systemPrompt = `You maintain a conservative localization glossary for anime, game, and music lyrics.
+
+Return JSON only with this shape:
+{"work":"","entities":[{"source":"","target":"","type":"character|organization|location|item|ability|title|franchise|other","confidence":"high|medium"}]}
+
+Rules:
+- Extract only genuine proper nouns or franchise-specific terms that occur in the supplied title, album, artist, or lyrics.
+- target is the established ${targetLanguage} localized form when you know it with high confidence.
+- If no established localization is known, use a natural ${targetLanguage} transliteration rather than translating the dictionary meaning of the name.
+- Omit uncertain guesses. Never invent an official localization.
+- Do not add ordinary vocabulary, grammar, metaphors, or generic nouns.
+- Keep at most 24 useful entities.
+- Do not repeat an entry that is already present in existing_glossary.
+- source must be text that actually appears in the supplied song data.
+- Output JSON only, with no Markdown or explanation.`;
+        const userPrompt = `<song_context>
+${JSON.stringify({
+    title: String(params.title || ''),
+    artist: String(params.artist || ''),
+    album: String(params.album || ''),
+    source_language: sourceLanguage,
+    target_language: targetLanguage
+})}
+</song_context>
+
+<existing_glossary>
+${JSON.stringify(existing)}
+</existing_glossary>
+
+<lyrics>
+${lyrics}
+</lyrics>`;
+        return { systemPrompt, userPrompt };
+    }
+
+    async function collectTranslationEntitiesWithOpenAI(params = {}) {
+        if (!isBackgroundGlossaryEnabled()) return { skipped: true, reason: 'disabled', entities: [] };
+        const baseUrl = getBaseUrl();
+        if (!isOfficialOpenAIBaseUrl(baseUrl)) return { skipped: true, reason: 'non-openai-base-url', entities: [] };
+        const apiKeys = getApiKeys();
+        if (apiKeys.length === 0) return { skipped: true, reason: 'missing-api-key', entities: [] };
+
+        const model = getBackgroundGlossaryModel();
+        const prompt = buildBackgroundGlossaryPrompt(params);
+        const useWebSearch = isBackgroundGlossaryWebSearchEnabled();
+        const requestBody = {
+            model,
+            instructions: prompt.systemPrompt,
+            input: prompt.userPrompt,
+            max_output_tokens: 1400,
+            ...(isReasoningCapableModel(model) ? { reasoning: { effort: 'low' } } : {}),
+            ...(useWebSearch ? { tools: [{ type: 'web_search' }], tool_choice: 'required' } : {}),
+            store: false
+        };
+
+        let lastError = null;
+        for (const apiKey of apiKeys) {
+            let usageReservationId = null;
+            try {
+                const guarded = beginTrackedOpenAIRequest(baseUrl, model, requestBody, 'responses');
+                usageReservationId = guarded.reservationId;
+                const response = await window.ivLyricsFetch(`${normalizeBaseUrl(baseUrl)}/responses`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${apiKey}`
+                    },
+                    body: JSON.stringify(guarded.body)
+                }, Math.max(window.ivLyricsFetch?.DEFAULT_TIMEOUT_MS || 90000, 120000));
+
+                if (response.status === 429 || response.status === 403) {
+                    cancelTrackedOpenAIRequest(baseUrl, usageReservationId);
+                    usageReservationId = null;
+                    continue;
+                }
+                if (!response.ok) {
+                    let errorMessage = `HTTP ${response.status}`;
+                    try {
+                        const errorData = await response.json();
+                        errorMessage = errorData?.error?.message || errorMessage;
+                    } catch {}
+                    throw new Error(`[ChatGPT Background Glossary] ${errorMessage}`);
+                }
+
+                const data = await response.json();
+                completeTrackedOpenAIRequest(baseUrl, model, usageReservationId, data?.usage);
+                usageReservationId = null;
+                const parsed = extractJSON(readResponsesOutputText(data));
+                const haystack = [params.title, params.artist, params.album, params.text]
+                    .map(value => String(value || '').toLocaleLowerCase())
+                    .join('\n');
+                const existingKeys = new Set([
+                    ...(Array.isArray(params.existingGlossary) ? params.existingGlossary : []),
+                    ...(Array.isArray(params.autoGlossary) ? params.autoGlossary : [])
+                ].map(entry => `${String(entry?.work || '').toLocaleLowerCase()}\u0000${String(entry?.source || '').toLocaleLowerCase()}`));
+                const seen = new Set();
+                const entities = (Array.isArray(parsed?.entities) ? parsed.entities : []).map(entry => ({
+                    source: String(entry?.source || '').trim().slice(0, 160),
+                    target: String(entry?.target || '').trim().slice(0, 160),
+                    work: String(entry?.work || parsed?.work || '').trim().slice(0, 160),
+                    type: String(entry?.type || 'other').trim().slice(0, 48),
+                    confidence: String(entry?.confidence || 'medium').toLowerCase() === 'high' ? 'high' : 'medium'
+                })).filter(entry => {
+                    if (!entry.source || !entry.target) return false;
+                    if (!haystack.includes(entry.source.toLocaleLowerCase())) return false;
+                    const key = `${entry.work.toLocaleLowerCase()}\u0000${entry.source.toLocaleLowerCase()}`;
+                    if (existingKeys.has(key) || seen.has(key)) return false;
+                    seen.add(key);
+                    return true;
+                }).slice(0, 24);
+
+                return {
+                    work: String(parsed?.work || '').trim().slice(0, 160),
+                    entities,
+                    webSearch: useWebSearch,
+                    model
+                };
+            } catch (error) {
+                cancelTrackedOpenAIRequest(baseUrl, usageReservationId);
+                if (error?.code === 'IVLYRICS_DAILY_TOKEN_LIMIT') throw error;
+                lastError = error;
+            }
+        }
+        throw lastError || new Error('[ChatGPT Background Glossary] All API keys failed');
+    }
 
     const ChatGPTAddon = {
         ...ADDON_INFO,
@@ -1282,6 +1502,7 @@
                         React.createElement('label', null, aiText('modelId', 'Custom Model ID')),
                         React.createElement('input', { type: 'text', value: customModel, onChange: handleCustomModelChange, placeholder: 'e.g., gpt-4-turbo' })
                     ),
+                    React.createElement(UsageAndBackgroundSection),
                     React.createElement(FallbackProvidersSection),
                     // Advanced API Parameters
                     React.createElement(AdvancedParamsSection)
@@ -1294,6 +1515,194 @@
                     )
                 );
             };
+
+            function UsageAndBackgroundSection() {
+                const tracker = window.OpenAIUsageTracker;
+                const [usage, setUsage] = useState(() => tracker?.getSnapshot?.() || null);
+                const [dailyLimit, setDailyLimitState] = useState(() => tracker?.getDailyLimit?.() || 0);
+                const [complimentaryEnabled, setComplimentaryEnabledState] = useState(
+                    () => tracker?.isComplimentaryEnabled?.() ?? true
+                );
+                const [complimentaryTier, setComplimentaryTierState] = useState(
+                    () => tracker?.getComplimentaryTier?.() || '1-2'
+                );
+                const [stopAtComplimentary, setStopAtComplimentaryState] = useState(
+                    () => tracker?.shouldStopAtComplimentary?.() || false
+                );
+                const [backgroundEnabled, setBackgroundEnabled] = useState(
+                    () => {
+                        const value = getSetting('background-glossary-enabled', true);
+                        return value === true || value === 'true';
+                    }
+                );
+                const [backgroundModel, setBackgroundModel] = useState(getBackgroundGlossaryModel);
+                const [backgroundWebSearch, setBackgroundWebSearch] = useState(isBackgroundGlossaryWebSearchEnabled);
+                const [autoGlossaryCount, setAutoGlossaryCount] = useState(
+                    () => window.AIAddonManager?.getAutoTranslationEntityGlossary?.().length || 0
+                );
+
+                useEffect(() => {
+                    const refreshUsage = (event) => setUsage(event?.detail || tracker?.getSnapshot?.() || null);
+                    window.addEventListener('ivLyrics:openai-usage-updated', refreshUsage);
+                    const unsubscribeGlossary = window.AIAddonManager?.on?.(
+                        'translation:auto-entity-glossary:changed',
+                        ({ entries }) => setAutoGlossaryCount(Array.isArray(entries) ? entries.length : 0)
+                    );
+                    return () => {
+                        window.removeEventListener('ivLyrics:openai-usage-updated', refreshUsage);
+                        if (typeof unsubscribeGlossary === 'function') unsubscribeGlossary();
+                    };
+                }, []);
+
+                const quotas = usage?.complimentaryQuotas || { standard: 250000, highVolume: 2500000 };
+                const remaining = usage?.complimentaryRemaining || quotas;
+                const currentGroup = tracker?.classifyComplimentaryGroup?.(getSelectedModel()) || 'other';
+
+                const checkboxRow = (label, checked, onChange, description = '') =>
+                    React.createElement('label', {
+                        style: { display: 'flex', flexDirection: 'column', gap: '4px' }
+                    },
+                        React.createElement('span', { style: { display: 'flex', alignItems: 'center', gap: '8px' } },
+                            React.createElement('input', {
+                                type: 'checkbox',
+                                checked,
+                                onChange: event => onChange(event.target.checked)
+                            }),
+                            label
+                        ),
+                        description && React.createElement('small', { style: { opacity: 0.65 } }, description)
+                    );
+
+                return React.createElement('div', {
+                    className: 'ai-addon-setting',
+                    style: { display: 'flex', flexDirection: 'column', gap: '12px' }
+                },
+                    React.createElement('div', { style: { fontWeight: 600 } }, 'OpenAI usage & background glossary'),
+                    usage && React.createElement('div', {
+                        style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: '8px' }
+                    },
+                        React.createElement('div', null,
+                            React.createElement('small', null, 'ivLyrics tokens today (UTC)'),
+                            React.createElement('div', { style: { fontWeight: 600 } }, formatTokenCount(usage.total))
+                        ),
+                        React.createElement('div', null,
+                            React.createElement('small', null, `1M group remaining (${formatTokenCount(quotas.standard)}/day)`),
+                            React.createElement('div', { style: { fontWeight: currentGroup === 'standard' ? 700 : 500 } }, formatTokenCount(remaining.standard))
+                        ),
+                        React.createElement('div', null,
+                            React.createElement('small', null, `10M group remaining (${formatTokenCount(quotas.highVolume)}/day)`),
+                            React.createElement('div', { style: { fontWeight: currentGroup === 'highVolume' ? 700 : 500 } }, formatTokenCount(remaining.highVolume))
+                        )
+                    ),
+                    React.createElement('small', { style: { opacity: 0.7, lineHeight: 1.45 } },
+                        'The remaining complimentary-token values are a local ivLyrics estimate, not account-wide OpenAI usage. Requests made by other apps are invisible here; the OpenAI Usage Dashboard is authoritative.'
+                    ),
+                    React.createElement('div', { className: 'ai-addon-input-group' },
+                        React.createElement('label', { style: { flex: 1 } },
+                            React.createElement('span', null, 'Daily ivLyrics token limit'),
+                            React.createElement('input', {
+                                type: 'number',
+                                min: 0,
+                                step: 1000,
+                                value: dailyLimit,
+                                onChange: event => {
+                                    const value = Math.max(0, Number(event.target.value) || 0);
+                                    setDailyLimitState(value);
+                                    tracker?.setDailyLimit?.(value);
+                                },
+                                placeholder: '0 = unlimited'
+                            })
+                        ),
+                        React.createElement('label', { style: { flex: 1 } },
+                            React.createElement('span', null, 'Complimentary usage tier'),
+                            React.createElement('select', {
+                                value: complimentaryTier,
+                                onChange: event => {
+                                    const value = event.target.value === '3-5' ? '3-5' : '1-2';
+                                    setComplimentaryTierState(value);
+                                    tracker?.setComplimentaryTier?.(value);
+                                }
+                            },
+                                React.createElement('option', { value: '1-2' }, 'Usage tier 1–2'),
+                                React.createElement('option', { value: '3-5' }, 'Usage tier 3–5')
+                            )
+                        )
+                    ),
+                    checkboxRow(
+                        'Track complimentary daily tokens',
+                        complimentaryEnabled,
+                        value => {
+                            setComplimentaryEnabledState(value);
+                            tracker?.setComplimentaryEnabled?.(value);
+                        },
+                        'Only enable this when your OpenAI organization is enrolled in the data-sharing complimentary-token program.'
+                    ),
+                    checkboxRow(
+                        'Stop before the locally tracked complimentary quota is exhausted',
+                        stopAtComplimentary,
+                        value => {
+                            setStopAtComplimentaryState(value);
+                            tracker?.setStopAtComplimentary?.(value);
+                        },
+                        'Uses the local counter and a conservative request reservation. It cannot see token usage from other apps or API keys.'
+                    ),
+                    React.createElement('div', { className: 'ai-addon-input-group' },
+                        React.createElement('button', {
+                            className: 'ai-addon-btn-secondary',
+                            onClick: () => setUsage(tracker?.resetToday?.() || null)
+                        }, 'Reset local counter'),
+                        React.createElement('button', {
+                            className: 'ai-addon-btn-secondary',
+                            onClick: () => window.open('https://platform.openai.com/usage/chat-completions', '_blank')
+                        }, 'Open OpenAI Usage Dashboard')
+                    ),
+                    React.createElement('hr', { style: { width: '100%', opacity: 0.15 } }),
+                    checkboxRow(
+                        'Background proper-noun collection',
+                        backgroundEnabled,
+                        value => {
+                            setBackgroundEnabled(value);
+                            setSetting('background-glossary-enabled', value);
+                        },
+                        'After a song is encountered, collect reusable anime/game proper nouns without blocking lyric display.'
+                    ),
+                    React.createElement('label', null,
+                        React.createElement('span', null, 'Background model'),
+                        React.createElement('input', {
+                            type: 'text',
+                            value: backgroundModel,
+                            onChange: event => {
+                                setBackgroundModel(event.target.value);
+                                setSetting('background-glossary-model', event.target.value);
+                            },
+                            placeholder: 'gpt-5.6-terra'
+                        }),
+                        React.createElement('small', { style: { opacity: 0.65 } },
+                            'Default: gpt-5.6-terra, which belongs to the larger complimentary-token group when eligible.'
+                        )
+                    ),
+                    checkboxRow(
+                        'Verify background terms with OpenAI Web Search',
+                        backgroundWebSearch,
+                        value => {
+                            setBackgroundWebSearch(value);
+                            setSetting('background-glossary-web-search', value);
+                        },
+                        'Off by default. Web Search tool calls have separate API charges and are not made free merely by complimentary model tokens.'
+                    ),
+                    React.createElement('div', { className: 'ai-addon-input-group' },
+                        React.createElement('small', null, `Background glossary: ${autoGlossaryCount} collected entries`),
+                        React.createElement('button', {
+                            className: 'ai-addon-btn-secondary',
+                            disabled: autoGlossaryCount === 0,
+                            onClick: () => {
+                                window.AIAddonManager?.clearAutoTranslationEntityGlossary?.();
+                                setAutoGlossaryCount(0);
+                            }
+                        }, 'Clear collected glossary')
+                    )
+                );
+            }
 
             function FallbackProvidersSection() {
                 const [connections, setConnections] = useState(getFallbackProviders);
@@ -1448,6 +1857,10 @@
                     )
                 );
             }
+        },
+
+        async collectTranslationEntities(params = {}) {
+            return await collectTranslationEntitiesWithOpenAI(params);
         },
 
         async translateLyrics({ text, lang, wantSmartPhonetic, translationPrompt, phoneticPrompt, onLine, onStreamReset }) {

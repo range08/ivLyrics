@@ -1661,6 +1661,9 @@ const CLOUD_SYNC_EXCLUDED_STORAGE_KEYS = new Set([
   TRACK_SYNC_OFFSETS_STORAGE_KEY,
   `${APP_NAME}:settings-presets`,
   `${APP_NAME}:ai:addon:chatgpt:fallback-providers`,
+  `${APP_NAME}:openai-usage:daily-state`,
+  `${APP_NAME}:ai:translation-auto-entity-glossary`,
+  `${APP_NAME}:ai:translation-entity-collection-seen`,
 ]);
 const CLOUD_SYNC_FORBIDDEN_KEY_PATTERN = /(apikey|token|password|secret|credential|clientid|userhash)/i;
 const CLOUD_SYNC_SAFE_TOKEN_LIMIT_PATTERN = /max(?:output)?tokens?/gi;

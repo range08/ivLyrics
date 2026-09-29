@@ -70,6 +70,7 @@
 		"StoragePersistence.js",
 		"MarketplaceManager.js",
 		"AIRequest.js",
+		"OpenAIUsageTracker.js",
 		"Addon_AI_Pollinations.js",
 		"Addon_AI_ChatGPT.js",
 		"Addon_AI_NvidiaNim.js",
