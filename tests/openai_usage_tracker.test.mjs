@@ -85,7 +85,7 @@ test("usage accounting normalizes Chat Completions and Responses fields", () => 
 
 test("daily budget guard reserves concurrent requests and clamps output", () => {
     const { tracker } = harness();
-    tracker.setDailyLimit(5000);
+    tracker.setDailyLimit(3500);
 
     const first = tracker.beginRequest({
         model: "gpt-6-sol",
