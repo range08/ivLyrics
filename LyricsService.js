@@ -8957,9 +8957,9 @@
                     return 'auto';
                 }
             })();
-            const glossaryRaw = wantSmartPhonetic
-                ? ''
-                : (window.AIAddonManager?.getTranslationEntityGlossaryRaw?.() || '');
+            const glossaryEntries = wantSmartPhonetic
+                ? []
+                : (window.AIAddonManager?.getTranslationEntityGlossary?.() || []);
             const translationContextHash = wantSmartPhonetic
                 ? ''
                 : getLyricsTextCacheHash(JSON.stringify({
@@ -8967,7 +8967,7 @@
                     artist: String(artist || ''),
                     album: String(album || ''),
                     sourceLang: String(resolvedSourceLang || 'auto'),
-                    glossary: glossaryRaw
+                    glossary: glossaryEntries
                 }));
             const sourceHash = wantSmartPhonetic
                 ? `${sourceTextHash}:phonetic-prompt=${PHONETIC_PROMPT_CACHE_VERSION}:notation=${resolvedPronunciationNotation}`
