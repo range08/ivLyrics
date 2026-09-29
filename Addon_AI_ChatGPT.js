@@ -900,6 +900,8 @@
                 let emittedLineCount = 0;
                 let emittedProvisionalOutput = false;
                 let receivedStreamText = false;
+                let usageReservationId = null;
+                let streamUsage = null;
                 const resetProvisionalOutput = (reason, error = null) => {
                     if (!emittedProvisionalOutput && !receivedStreamText) return;
 
@@ -922,6 +924,12 @@
 
                 try {
                     const endpoint = `${baseUrl.replace(/\/$/, '')}/chat/completions`;
+                    const builtBody = buildChatGPTRequestBody(model, prompt, { stream: true, reasoningProfile });
+                    if (isOfficialOpenAIBaseUrl(baseUrl)) {
+                        builtBody.stream_options = { ...(builtBody.stream_options || {}), include_usage: true };
+                    }
+                    const guardedRequest = beginTrackedOpenAIRequest(baseUrl, model, builtBody, 'chat');
+                    usageReservationId = guardedRequest.reservationId;
 
                     const response = await window.ivLyricsFetch(endpoint, {
                         method: 'POST',
@@ -929,10 +937,12 @@
                             'Content-Type': 'application/json',
                             'Authorization': `Bearer ${apiKey}`
                         },
-                        body: JSON.stringify(buildChatGPTRequestBody(model, prompt, { stream: true, reasoningProfile }))
+                        body: JSON.stringify(guardedRequest.body)
                     }, requestTimeoutMs);
 
                     if (response.status === 429 || response.status === 403) {
+                        cancelTrackedOpenAIRequest(baseUrl, usageReservationId);
+                        usageReservationId = null;
                         window.__ivLyricsDebugLog?.(`[ChatGPT Addon] Stream: API key ${keyIndex + 1} failed (${response.status}), trying next...`);
                         break;
                     }
@@ -955,6 +965,8 @@
                     const contentType = String(response.headers?.get?.('content-type') || '').toLowerCase();
                     if (!response.body || !contentType.includes('text/event-stream')) {
                         const data = await response.json();
+                        completeTrackedOpenAIRequest(baseUrl, model, usageReservationId, data?.usage);
+                        usageReservationId = null;
                         const rawText = readChatGPTResponseText(data);
                         if (!rawText.trim()) throw new Error('[ChatGPT] Empty response from API');
                         if (typeof onRawChunk === 'function') {
@@ -986,6 +998,7 @@
                         if (!payload || payload === '[DONE]') return;
 
                         const parsed = JSON.parse(payload);
+                        if (parsed?.usage) streamUsage = parsed.usage;
                         const chunk = readChatGPTStreamChunk(parsed);
                         if (chunk.text) {
                             accumulated += chunk.text;
@@ -1034,6 +1047,8 @@
                         throw createChatGPTResponseError(finalFinishReason);
                     }
                     if (!accumulated.trim()) throw new Error('[ChatGPT] Empty response from streaming API');
+                    completeTrackedOpenAIRequest(baseUrl, model, usageReservationId, streamUsage);
+                    usageReservationId = null;
 
                     const transformed = typeof transformResult === 'function'
                         ? transformResult(accumulated)
@@ -1054,6 +1069,8 @@
                     return transformed;
 
                 } catch (e) {
+                    cancelTrackedOpenAIRequest(baseUrl, usageReservationId);
+                    usageReservationId = null;
                     lastError = e;
                     window.__ivLyricsDebugLog?.(`[ChatGPT Addon] Stream attempt ${attempt + 1} failed:`, e.message);
                     resetProvisionalOutput(attempt < maxRetries - 1 ? 'retry' : 'failed', e);
