@@ -1849,6 +1849,132 @@ ${JSON.stringify(payload)}`;
             return parseTranslationEntityGlossary(this.getTranslationEntityGlossaryRaw());
         }
 
+        getAutoTranslationEntityGlossary() {
+            return normalizeAutoTranslationEntityGlossary(
+                getStoredValue(TRANSLATION_AUTO_ENTITY_GLOSSARY_STORAGE_KEY)
+            );
+        }
+
+        clearAutoTranslationEntityGlossary() {
+            setStoredValue(TRANSLATION_AUTO_ENTITY_GLOSSARY_STORAGE_KEY, '[]');
+            setStoredValue(TRANSLATION_ENTITY_COLLECTION_SEEN_KEY, '[]');
+            this.emit('translation:auto-entity-glossary:changed', { entries: [] });
+            return [];
+        }
+
+        addAutoTranslationEntityGlossary(entries, context = {}) {
+            const incoming = normalizeAutoTranslationEntityGlossary(
+                (Array.isArray(entries) ? entries : []).map(entry => ({
+                    ...entry,
+                    provider: context.provider || entry?.provider || '',
+                    trackId: context.trackId || entry?.trackId || '',
+                    updatedAt: Date.now()
+                }))
+            );
+            if (incoming.length === 0) return this.getAutoTranslationEntityGlossary();
+
+            const current = this.getAutoTranslationEntityGlossary();
+            const byKey = new Map(
+                current.map(entry => [
+                    `${entry.work.toLocaleLowerCase()}\u0000${entry.source.toLocaleLowerCase()}`,
+                    entry
+                ])
+            );
+
+            for (const entry of incoming) {
+                const key = `${entry.work.toLocaleLowerCase()}\u0000${entry.source.toLocaleLowerCase()}`;
+                const previous = byKey.get(key);
+                if (!previous || (previous.confidence !== 'high' && entry.confidence === 'high')) {
+                    byKey.set(key, entry);
+                }
+            }
+
+            const merged = Array.from(byKey.values())
+                .sort((left, right) => Number(right.updatedAt || 0) - Number(left.updatedAt || 0))
+                .slice(0, TRANSLATION_AUTO_ENTITY_GLOSSARY_MAX_ENTRIES);
+            setStoredValue(TRANSLATION_AUTO_ENTITY_GLOSSARY_STORAGE_KEY, JSON.stringify(merged));
+            this.emit('translation:auto-entity-glossary:changed', { entries: merged });
+            return merged;
+        }
+
+        _getTranslationEntityCollectionSeen() {
+            return parseTranslationEntityCollectionSeen(
+                getStoredValue(TRANSLATION_ENTITY_COLLECTION_SEEN_KEY)
+            );
+        }
+
+        _markTranslationEntityCollectionSeen(key) {
+            const seen = this._getTranslationEntityCollectionSeen().filter(item => item !== key);
+            seen.push(key);
+            setStoredValue(
+                TRANSLATION_ENTITY_COLLECTION_SEEN_KEY,
+                JSON.stringify(seen.slice(-TRANSLATION_ENTITY_COLLECTION_MAX_SEEN))
+            );
+        }
+
+        scheduleTranslationEntityCollection(params = {}) {
+            const trackId = String(params.trackId || '').trim();
+            const text = String(params.text || '').trim();
+            if (!trackId || !text) return Promise.resolve(null);
+
+            const collector = this.getEnabledProvidersFor('translate')
+                .find(addon => typeof addon.collectTranslationEntities === 'function');
+            if (!collector) return Promise.resolve(null);
+
+            const key = [
+                trackId,
+                String(params.lang || ''),
+                String(params.sourceLang || ''),
+                String(collector.id || '')
+            ].join(':');
+            if (this._getTranslationEntityCollectionSeen().includes(key)) {
+                return Promise.resolve(null);
+            }
+            if (this._translationEntityCollectionInflight.has(key)) {
+                return this._translationEntityCollectionInflight.get(key);
+            }
+
+            const run = async () => {
+                const result = await this._callProvider(collector, 'collectTranslationEntities', {
+                    trackId,
+                    title: params.title,
+                    artist: params.artist,
+                    album: params.album,
+                    text,
+                    lang: params.lang,
+                    sourceLang: params.sourceLang,
+                    existingGlossary: this.getTranslationEntityGlossary(),
+                    autoGlossary: this.getAutoTranslationEntityGlossary()
+                });
+                const entries = Array.isArray(result?.entities) ? result.entities : [];
+                if (entries.length > 0) {
+                    this.addAutoTranslationEntityGlossary(entries, {
+                        provider: collector.id,
+                        trackId
+                    });
+                }
+                this._markTranslationEntityCollectionSeen(key);
+                return result;
+            };
+
+            const promise = new Promise((resolve, reject) => {
+                const start = () => run().then(resolve, reject);
+                if (typeof requestIdleCallback === 'function') {
+                    requestIdleCallback(start, { timeout: 5000 });
+                } else {
+                    setTimeout(start, 1500);
+                }
+            }).catch(error => {
+                window.__ivLyricsDebugLog?.('[AIAddonManager] Background entity glossary collection failed:', error?.message);
+                return null;
+            }).finally(() => {
+                this._translationEntityCollectionInflight.delete(key);
+            });
+
+            this._translationEntityCollectionInflight.set(key, promise);
+            return promise;
+        }
+
         /**
          * AI 제공자별 추가 재시도 횟수 저장
          * @param {number} retryCount - 최초 요청 실패 후 추가로 시도할 횟수
