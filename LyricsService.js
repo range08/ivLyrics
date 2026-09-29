@@ -8575,8 +8575,8 @@
     // 전역 요청 상태 관리 (중복 요청 방지)
     const _translatorInflightRequests = new Map();
     const _translatorPendingRetries = new Map();
-    const PHONETIC_PROMPT_CACHE_VERSION = 2;
-    const TRANSLATION_PROMPT_CACHE_VERSION = 2;
+    const PHONETIC_PROMPT_CACHE_VERSION = 3;
+    const TRANSLATION_PROMPT_CACHE_VERSION = 3;
 
     function normalizeServicePronunciationNotation(value) {
         const normalized = String(value || '').trim().toLowerCase();
@@ -8636,30 +8636,43 @@
         title = '',
         artist = '',
         album = '',
-        sourceLang = null
+        sourceLang = null,
+        trackId = '',
+        webContextHash = ''
     } = {}) {
         const sourceTextHash = getLyricsTextCacheHash(text);
+        const context = resolveTranslationTrackContext({ title, artist, album });
+        const resolvedSourceLang = resolveTranslationSourceLanguage(text, sourceLang);
+        const resolvedWebContextHash = String(
+            webContextHash ||
+            window.ivLyricsWebContext?.peekHash?.({
+                trackId,
+                ...context
+            }) ||
+            'none'
+        );
+        const sharedContextHash = getLyricsTextCacheHash(JSON.stringify({
+            ...context,
+            sourceLang: String(resolvedSourceLang || 'auto'),
+            webContextHash: resolvedWebContextHash
+        }));
+
         if (isPhonetic) {
             const notation = normalizeServicePronunciationNotation(
                 pronunciationNotation || getServicePronunciationNotation()
             );
-            return `${sourceTextHash}:phonetic-prompt=${PHONETIC_PROMPT_CACHE_VERSION}:notation=${notation}`;
+            return `${sourceTextHash}:phonetic-prompt=${PHONETIC_PROMPT_CACHE_VERSION}:notation=${notation}:context=${sharedContextHash}`;
         }
 
         const style = translationStyle
             || window.AIAddonManager?.getTranslationStyle?.()
             || 'natural';
-        const resolvedSourceLang = resolveTranslationSourceLanguage(text, sourceLang);
-        const context = resolveTranslationTrackContext({ title, artist, album });
         const glossaryEntries = window.AIAddonManager?.getTranslationEntityGlossary?.() || [];
-        const autoGlossaryEntries = window.AIAddonManager?.getAutoTranslationEntityGlossary?.() || [];
-        const contextHash = getLyricsTextCacheHash(JSON.stringify({
-            ...context,
-            sourceLang: String(resolvedSourceLang || 'auto'),
-            glossary: glossaryEntries,
-            autoGlossary: autoGlossaryEntries
+        const translationContextHash = getLyricsTextCacheHash(JSON.stringify({
+            sharedContextHash,
+            glossary: glossaryEntries
         }));
-        return `${sourceTextHash}:translation-prompt=${TRANSLATION_PROMPT_CACHE_VERSION}:style=${style}:context=${contextHash}`;
+        return `${sourceTextHash}:translation-prompt=${TRANSLATION_PROMPT_CACHE_VERSION}:style=${style}:context=${translationContextHash}`;
     }
 
     window.ivLyricsTranslationCache = {
@@ -9024,14 +9037,6 @@
                 : (window.AIAddonManager?.getTranslationStyle?.() || 'natural');
             const resolvedSourceLang = resolveTranslationSourceLanguage(text, sourceLang);
             const trackContext = resolveTranslationTrackContext({ title, artist, album });
-            const sourceHash = getTranslationCacheSourceHash({
-                text,
-                isPhonetic: wantSmartPhonetic,
-                pronunciationNotation: resolvedPronunciationNotation,
-                translationStyle,
-                ...trackContext,
-                sourceLang: resolvedSourceLang
-            });
 
             let finalTrackId = trackId;
             if (!finalTrackId) {
@@ -9042,21 +9047,26 @@
             }
 
             const userLang = getTranslationTargetLanguage();
-
-            // Translation glossary enrichment is intentionally detached from
-            // the foreground translation result. It may run even when the
-            // translated lyrics themselves are already cached.
+            let webContext = null;
             try {
-                void window.AIAddonManager?.scheduleTranslationEntityCollection?.({
+                webContext = await window.ivLyricsWebContext?.getContext?.({
                     trackId: finalTrackId,
-                    artist: trackContext.artist,
-                    title: trackContext.title,
-                    album: trackContext.album,
-                    text,
-                    lang: userLang,
-                    sourceLang: resolvedSourceLang
-                });
-            } catch {}
+                    ...trackContext
+                }) || null;
+            } catch (error) {
+                serviceDebug(`[Translator] Web context unavailable: ${error?.message || error}`);
+            }
+
+            const sourceHash = getTranslationCacheSourceHash({
+                text,
+                isPhonetic: wantSmartPhonetic,
+                pronunciationNotation: resolvedPronunciationNotation,
+                translationStyle,
+                ...trackContext,
+                sourceLang: resolvedSourceLang,
+                trackId: finalTrackId,
+                webContextHash: webContext?.hash || ''
+            });
 
             // 로컬 캐시 확인
             if (!ignoreCache) {
@@ -9102,6 +9112,7 @@
                             pronunciationNotation: resolvedPronunciationNotation,
                             sourceLang: resolvedSourceLang,
                             provider,
+                            webContext,
                             onLine,
                             onStreamReset
                         });
