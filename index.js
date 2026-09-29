@@ -6391,6 +6391,15 @@ class LyricsContainer extends react.Component {
 
       const currentUri = lyricsState.uri;
       const currentProvider = lyricsState.provider || "";
+      const translationSourceLang =
+        this.trackLanguageOverride || this.provideLanguageCode(originalLyrics) || "auto";
+      const translationSpotifyData = SpotifyDataHelper.extractSpotifyData(currentUri);
+      const translationContext = {
+        title: this.state.title || lyricsState.title || translationSpotifyData?.name || "",
+        artist: this.state.artist || lyricsState.artist || translationSpotifyData?.artists?.join(", ") || "",
+        album: translationSpotifyData?.album || Spicetify.Player?.data?.item?.metadata?.album_title || "",
+        sourceLang: translationSourceLang,
+      };
 
       if (!this._dmResults) {
         this._dmResults = {};
@@ -6550,12 +6559,12 @@ class LyricsContainer extends react.Component {
       if (needPhonetic) {
         phoneticResponse = await window.Translator.callGemini({
           trackId,
-          artist: this.state.artist || lyricsState.artist,
-          title: this.state.title || lyricsState.title,
+          artist: translationContext.artist,
+          title: translationContext.title,
+          album: translationContext.album,
           text,
           wantSmartPhonetic: true,
-          sourceLang:
-            this.trackLanguageOverride || this.provideLanguageCode(originalLyrics) || "auto",
+          sourceLang: translationContext.sourceLang,
           provider: lyricsState.provider,
           ignoreCache: true,
           onLine: handlePhoneticStreamLine,
@@ -6570,10 +6579,12 @@ class LyricsContainer extends react.Component {
         }
         translationResponse = await window.Translator.callGemini({
           trackId,
-          artist: this.state.artist || lyricsState.artist,
-          title: this.state.title || lyricsState.title,
+          artist: translationContext.artist,
+          title: translationContext.title,
+          album: translationContext.album,
           text,
           wantSmartPhonetic: false,
+          sourceLang: translationContext.sourceLang,
           provider: lyricsState.provider,
           ignoreCache: true,
           onLine: handleTranslationStreamLine,
@@ -6615,6 +6626,7 @@ class LyricsContainer extends react.Component {
             provider: lyricsState.provider,
             text,
             outText: phoneticOutput,
+            ...translationContext,
           })
           : null,
         needTranslation && translationOutput
@@ -6625,6 +6637,7 @@ class LyricsContainer extends react.Component {
             provider: lyricsState.provider,
             text,
             outText: translationOutput,
+            ...translationContext,
           })
           : null,
       ].filter(Boolean));
