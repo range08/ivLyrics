@@ -8166,8 +8166,18 @@ class LyricsContainer extends react.Component {
       // Filter out section headers before sending to Gemini for translation
       const text = getNonSectionLyricsText(lyrics);
       const legacyText = getLegacyNonSectionLyricsText(lyrics);
-      const trackId = Utils.extractTrackId(lyricsState.uri || this.state.uri);
+      const trackUri = lyricsState.uri || this.state.uri;
+      const trackId = Utils.extractTrackId(trackUri);
       const userLang = this.getTranslationTargetLanguage();
+      const translationSourceLang =
+        this.trackLanguageOverride || this.provideLanguageCode(lyrics) || "auto";
+      const translationSpotifyData = SpotifyDataHelper.extractSpotifyData(trackUri);
+      const translationContext = {
+        title: this.state.title || lyricsState.title || translationSpotifyData?.name || "",
+        artist: this.state.artist || lyricsState.artist || translationSpotifyData?.artists?.join(", ") || "",
+        album: translationSpotifyData?.album || Spicetify.Player?.data?.item?.metadata?.album_title || "",
+        sourceLang: translationSourceLang,
+      };
 
       const mapResultLinesToLyrics = (linesInput, splitVocalParts = true) => {
         return mapTranslationLinesToLyrics(lyrics, linesInput, {
@@ -8211,6 +8221,7 @@ class LyricsContainer extends react.Component {
             isPhonetic: wantSmartPhonetic,
             provider: lyricsState.provider,
             text: cacheText,
+            ...translationContext,
           });
           return getTranslationOutputFromCache(cachedResult, wantSmartPhonetic);
         };
@@ -8235,12 +8246,12 @@ class LyricsContainer extends react.Component {
 
           const response = await window.Translator.callGemini({
             apiKey,
-            artist: this.state.artist || lyricsState.artist,
-            title: this.state.title || lyricsState.title,
+            artist: translationContext.artist,
+            title: translationContext.title,
+            album: translationContext.album,
             text,
             wantSmartPhonetic,
-            sourceLang:
-              this.trackLanguageOverride || this.provideLanguageCode(lyrics) || "auto",
+            sourceLang: translationContext.sourceLang,
             provider: lyricsState.provider,
             onLine: handleStreamLine,
             onStreamReset: handleStreamReset,
