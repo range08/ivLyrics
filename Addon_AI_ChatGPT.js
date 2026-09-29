@@ -251,6 +251,32 @@
         return getSetting('model', null);
     }
 
+    function isOfficialOpenAIBaseUrl(baseUrl) {
+        return normalizeBaseUrl(baseUrl) === DEFAULT_OPENAI_BASE_URL;
+    }
+
+    function beginTrackedOpenAIRequest(baseUrl, model, body, apiMode) {
+        if (!isOfficialOpenAIBaseUrl(baseUrl) || !window.OpenAIUsageTracker?.beginRequest) {
+            return { body, reservationId: null };
+        }
+        return window.OpenAIUsageTracker.beginRequest({ model, body, apiMode });
+    }
+
+    function completeTrackedOpenAIRequest(baseUrl, model, reservationId, usage) {
+        if (!isOfficialOpenAIBaseUrl(baseUrl) || !window.OpenAIUsageTracker?.completeRequest) return;
+        window.OpenAIUsageTracker.completeRequest(reservationId, { model, usage });
+    }
+
+    function cancelTrackedOpenAIRequest(baseUrl, reservationId) {
+        if (!reservationId || !isOfficialOpenAIBaseUrl(baseUrl)) return;
+        window.OpenAIUsageTracker?.cancelRequest?.(reservationId);
+    }
+
+    function formatTokenCount(value) {
+        const number = Math.max(0, Number(value) || 0);
+        return new Intl.NumberFormat(undefined, { maximumFractionDigits: 1, notation: number >= 10000 ? 'compact' : 'standard' }).format(number);
+    }
+
 
     function parseConnectionKeys(raw) {
         if (Array.isArray(raw)) return raw.filter(key => typeof key === 'string').map(key => key.trim()).filter(Boolean);
