@@ -1196,154 +1196,6 @@
     // Addon Implementation
     // ============================================
 
-    function isBackgroundGlossaryEnabled() {
-        const value = getSetting('background-glossary-enabled', true);
-        return value === true || value === 'true';
-    }
-
-    function isBackgroundGlossaryWebSearchEnabled() {
-        const value = getSetting('background-glossary-web-search', false);
-        return value === true || value === 'true';
-    }
-
-    function getBackgroundGlossaryModel() {
-        return String(getSetting('background-glossary-model', 'gpt-5.6-terra') || 'gpt-5.6-terra').trim();
-    }
-
-    function buildBackgroundGlossaryPrompt(params = {}) {
-        const targetLanguage = String(params.lang || 'ko').trim();
-        const sourceLanguage = String(params.sourceLang || 'auto').trim();
-        const lyrics = String(params.text || '').slice(0, 16000);
-        const existing = [
-            ...(Array.isArray(params.existingGlossary) ? params.existingGlossary : []),
-            ...(Array.isArray(params.autoGlossary) ? params.autoGlossary : [])
-        ].slice(0, 160).map(entry => ({ source: entry.source, target: entry.target, work: entry.work || '' }));
-        const systemPrompt = `You maintain a conservative localization glossary for anime, game, and music lyrics.
-
-Return JSON only with this shape:
-{"work":"","entities":[{"source":"","target":"","type":"character|organization|location|item|ability|title|franchise|other","confidence":"high|medium"}]}
-
-Rules:
-- Extract only genuine proper nouns or franchise-specific terms that occur in the supplied title, album, artist, or lyrics.
-- target is the established ${targetLanguage} localized form when you know it with high confidence.
-- If no established localization is known, use a natural ${targetLanguage} transliteration rather than translating the dictionary meaning of the name.
-- Omit uncertain guesses. Never invent an official localization.
-- Do not add ordinary vocabulary, grammar, metaphors, or generic nouns.
-- Keep at most 24 useful entities.
-- Do not repeat an entry that is already present in existing_glossary.
-- source must be text that actually appears in the supplied song data.
-- Output JSON only, with no Markdown or explanation.`;
-        const userPrompt = `<song_context>
-${JSON.stringify({
-    title: String(params.title || ''),
-    artist: String(params.artist || ''),
-    album: String(params.album || ''),
-    source_language: sourceLanguage,
-    target_language: targetLanguage
-})}
-</song_context>
-
-<existing_glossary>
-${JSON.stringify(existing)}
-</existing_glossary>
-
-<lyrics>
-${lyrics}
-</lyrics>`;
-        return { systemPrompt, userPrompt };
-    }
-
-    async function collectTranslationEntitiesWithOpenAI(params = {}) {
-        if (!isBackgroundGlossaryEnabled()) return { skipped: true, reason: 'disabled', entities: [] };
-        const baseUrl = getBaseUrl();
-        if (!isOfficialOpenAIBaseUrl(baseUrl)) return { skipped: true, reason: 'non-openai-base-url', entities: [] };
-        const apiKeys = getApiKeys();
-        if (apiKeys.length === 0) return { skipped: true, reason: 'missing-api-key', entities: [] };
-
-        const model = getBackgroundGlossaryModel();
-        const prompt = buildBackgroundGlossaryPrompt(params);
-        const useWebSearch = isBackgroundGlossaryWebSearchEnabled();
-        const requestBody = {
-            model,
-            instructions: prompt.systemPrompt,
-            input: prompt.userPrompt,
-            max_output_tokens: 1400,
-            ...(isReasoningCapableModel(model) ? { reasoning: { effort: 'low' } } : {}),
-            ...(useWebSearch ? { tools: [{ type: 'web_search' }], tool_choice: 'required' } : {}),
-            store: false
-        };
-
-        let lastError = null;
-        for (const apiKey of apiKeys) {
-            let usageReservationId = null;
-            try {
-                const guarded = beginTrackedOpenAIRequest(baseUrl, model, requestBody, 'responses');
-                usageReservationId = guarded.reservationId;
-                const response = await window.ivLyricsFetch(`${normalizeBaseUrl(baseUrl)}/responses`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${apiKey}`
-                    },
-                    body: JSON.stringify(guarded.body)
-                }, Math.max(window.ivLyricsFetch?.DEFAULT_TIMEOUT_MS || 90000, 120000));
-
-                if (response.status === 429 || response.status === 403) {
-                    cancelTrackedOpenAIRequest(baseUrl, usageReservationId);
-                    usageReservationId = null;
-                    continue;
-                }
-                if (!response.ok) {
-                    let errorMessage = `HTTP ${response.status}`;
-                    try {
-                        const errorData = await response.json();
-                        errorMessage = errorData?.error?.message || errorMessage;
-                    } catch {}
-                    throw new Error(`[ChatGPT Background Glossary] ${errorMessage}`);
-                }
-
-                const data = await response.json();
-                completeTrackedOpenAIRequest(baseUrl, model, usageReservationId, data?.usage);
-                usageReservationId = null;
-                const parsed = extractJSON(readResponsesOutputText(data));
-                const haystack = [params.title, params.artist, params.album, params.text]
-                    .map(value => String(value || '').toLocaleLowerCase())
-                    .join('\n');
-                const existingKeys = new Set([
-                    ...(Array.isArray(params.existingGlossary) ? params.existingGlossary : []),
-                    ...(Array.isArray(params.autoGlossary) ? params.autoGlossary : [])
-                ].map(entry => `${String(entry?.work || '').toLocaleLowerCase()}\u0000${String(entry?.source || '').toLocaleLowerCase()}`));
-                const seen = new Set();
-                const entities = (Array.isArray(parsed?.entities) ? parsed.entities : []).map(entry => ({
-                    source: String(entry?.source || '').trim().slice(0, 160),
-                    target: String(entry?.target || '').trim().slice(0, 160),
-                    work: String(entry?.work || parsed?.work || '').trim().slice(0, 160),
-                    type: String(entry?.type || 'other').trim().slice(0, 48),
-                    confidence: String(entry?.confidence || 'medium').toLowerCase() === 'high' ? 'high' : 'medium'
-                })).filter(entry => {
-                    if (!entry.source || !entry.target) return false;
-                    if (!haystack.includes(entry.source.toLocaleLowerCase())) return false;
-                    const key = `${entry.work.toLocaleLowerCase()}\u0000${entry.source.toLocaleLowerCase()}`;
-                    if (existingKeys.has(key) || seen.has(key)) return false;
-                    seen.add(key);
-                    return true;
-                }).slice(0, 24);
-
-                return {
-                    work: String(parsed?.work || '').trim().slice(0, 160),
-                    entities,
-                    webSearch: useWebSearch,
-                    model
-                };
-            } catch (error) {
-                cancelTrackedOpenAIRequest(baseUrl, usageReservationId);
-                if (error?.code === 'IVLYRICS_DAILY_TOKEN_LIMIT') throw error;
-                lastError = error;
-            }
-        }
-        throw lastError || new Error('[ChatGPT Background Glossary] All API keys failed');
-    }
-
     const ChatGPTAddon = {
         ...ADDON_INFO,
 
@@ -1518,6 +1370,7 @@ ${lyrics}
 
             function UsageAndBackgroundSection() {
                 const tracker = window.OpenAIUsageTracker;
+                const webContext = window.ivLyricsWebContext;
                 const [usage, setUsage] = useState(() => tracker?.getSnapshot?.() || null);
                 const [dailyLimit, setDailyLimitState] = useState(() => tracker?.getDailyLimit?.() || 0);
                 const [complimentaryEnabled, setComplimentaryEnabledState] = useState(
@@ -1529,34 +1382,37 @@ ${lyrics}
                 const [stopAtComplimentary, setStopAtComplimentaryState] = useState(
                     () => tracker?.shouldStopAtComplimentary?.() || false
                 );
-                const [backgroundEnabled, setBackgroundEnabled] = useState(
-                    () => {
-                        const value = getSetting('background-glossary-enabled', true);
-                        return value === true || value === 'true';
-                    }
+                const [webContextEnabled, setWebContextEnabled] = useState(
+                    () => webContext?.isEnabled?.() ?? true
                 );
-                const [backgroundModel, setBackgroundModel] = useState(getBackgroundGlossaryModel);
-                const [backgroundWebSearch, setBackgroundWebSearch] = useState(isBackgroundGlossaryWebSearchEnabled);
-                const [autoGlossaryCount, setAutoGlossaryCount] = useState(
-                    () => window.AIAddonManager?.getAutoTranslationEntityGlossary?.().length || 0
+                const [webContextStats, setWebContextStats] = useState(
+                    () => webContext?.getStats?.() || { entries: 0, pages: 0 }
                 );
 
                 useEffect(() => {
                     const refreshUsage = (event) => setUsage(event?.detail || tracker?.getSnapshot?.() || null);
-                    window.addEventListener('ivLyrics:openai-usage-updated', refreshUsage);
-                    const unsubscribeGlossary = window.AIAddonManager?.on?.(
-                        'translation:auto-entity-glossary:changed',
-                        ({ entries }) => setAutoGlossaryCount(Array.isArray(entries) ? entries.length : 0)
+                    const refreshWebContextStats = () => setWebContextStats(
+                        webContext?.getStats?.() || { entries: 0, pages: 0 }
                     );
+                    window.addEventListener('ivLyrics:openai-usage-updated', refreshUsage);
+                    window.addEventListener('ivLyrics:web-context-cache-cleared', refreshWebContextStats);
+                    const interval = setInterval(refreshWebContextStats, 5000);
                     return () => {
                         window.removeEventListener('ivLyrics:openai-usage-updated', refreshUsage);
-                        if (typeof unsubscribeGlossary === 'function') unsubscribeGlossary();
+                        window.removeEventListener('ivLyrics:web-context-cache-cleared', refreshWebContextStats);
+                        clearInterval(interval);
                     };
                 }, []);
 
                 const quotas = usage?.complimentaryQuotas || { standard: 250000, highVolume: 2500000 };
                 const remaining = usage?.complimentaryRemaining || quotas;
                 const currentGroup = tracker?.classifyComplimentaryGroup?.(getSelectedModel()) || 'other';
+                const constants = webContext?.constants || {
+                    targetPageCount: 5,
+                    cacheTtlMs: 30 * 24 * 60 * 60 * 1000,
+                    maxPageTextChars: 12000,
+                    maxTotalTextChars: 50000
+                };
 
                 const checkboxRow = (label, checked, onChange, description = '') =>
                     React.createElement('label', {
@@ -1577,7 +1433,7 @@ ${lyrics}
                     className: 'ai-addon-setting',
                     style: { display: 'flex', flexDirection: 'column', gap: '12px' }
                 },
-                    React.createElement('div', { style: { fontWeight: 600 } }, 'OpenAI usage & background glossary'),
+                    React.createElement('div', { style: { fontWeight: 600 } }, 'OpenAI usage & free web context'),
                     usage && React.createElement('div', {
                         style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: '8px' }
                     },
@@ -1658,48 +1514,29 @@ ${lyrics}
                     ),
                     React.createElement('hr', { style: { width: '100%', opacity: 0.15 } }),
                     checkboxRow(
-                        'Background proper-noun collection',
-                        backgroundEnabled,
+                        'Attach top 5 web page bodies to lyric AI requests',
+                        webContextEnabled,
                         value => {
-                            setBackgroundEnabled(value);
-                            setSetting('background-glossary-enabled', value);
+                            setWebContextEnabled(value);
+                            webContext?.setEnabled?.(value);
                         },
-                        'After a song is encountered, collect reusable anime/game proper nouns without blocking lyric display.'
+                        'Searches the song title/artist/album with ordinary web requests (Google first, DuckDuckGo fallback), fetches five result pages, extracts visible main text, and attaches it to translation and pronunciation prompts. This does not use OpenAI web_search.'
                     ),
-                    React.createElement('label', null,
-                        React.createElement('span', null, 'Background model'),
-                        React.createElement('input', {
-                            type: 'text',
-                            value: backgroundModel,
-                            onChange: event => {
-                                setBackgroundModel(event.target.value);
-                                setSetting('background-glossary-model', event.target.value);
-                            },
-                            placeholder: 'gpt-5.6-terra'
-                        }),
-                        React.createElement('small', { style: { opacity: 0.65 } },
-                            'Default: gpt-5.6-terra, which belongs to the larger complimentary-token group when eligible.'
-                        )
-                    ),
-                    checkboxRow(
-                        'Verify background terms with OpenAI Web Search',
-                        backgroundWebSearch,
-                        value => {
-                            setBackgroundWebSearch(value);
-                            setSetting('background-glossary-web-search', value);
-                        },
-                        'Off by default. Web Search tool calls have separate API charges and are not made free merely by complimentary model tokens.'
+                    React.createElement('small', { style: { opacity: 0.65, lineHeight: 1.45 } },
+                        `Per page: up to ${formatTokenCount(constants.maxPageTextChars)} characters. Combined context: up to ${formatTokenCount(constants.maxTotalTextChars)} characters. Cache: ${Math.round(constants.cacheTtlMs / 86400000)} days.`
                     ),
                     React.createElement('div', { className: 'ai-addon-input-group' },
-                        React.createElement('small', null, `Background glossary: ${autoGlossaryCount} collected entries`),
+                        React.createElement('small', null,
+                            `Web context cache: ${webContextStats.entries} tracks / ${webContextStats.pages} pages`
+                        ),
                         React.createElement('button', {
                             className: 'ai-addon-btn-secondary',
-                            disabled: autoGlossaryCount === 0,
+                            disabled: webContextStats.entries === 0,
                             onClick: () => {
-                                window.AIAddonManager?.clearAutoTranslationEntityGlossary?.();
-                                setAutoGlossaryCount(0);
+                                webContext?.clearCache?.();
+                                setWebContextStats({ entries: 0, pages: 0 });
                             }
-                        }, 'Clear collected glossary')
+                        }, 'Clear web context cache')
                     )
                 );
             }
@@ -1857,10 +1694,6 @@ ${lyrics}
                     )
                 );
             }
-        },
-
-        async collectTranslationEntities(params = {}) {
-            return await collectTranslationEntitiesWithOpenAI(params);
         },
 
         async translateLyrics({ text, lang, wantSmartPhonetic, translationPrompt, phoneticPrompt, onLine, onStreamReset }) {
