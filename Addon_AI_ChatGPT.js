@@ -1498,6 +1498,7 @@ ${lyrics}
                         React.createElement('label', null, aiText('modelId', 'Custom Model ID')),
                         React.createElement('input', { type: 'text', value: customModel, onChange: handleCustomModelChange, placeholder: 'e.g., gpt-4-turbo' })
                     ),
+                    React.createElement(UsageAndBackgroundSection),
                     React.createElement(FallbackProvidersSection),
                     // Advanced API Parameters
                     React.createElement(AdvancedParamsSection)
@@ -1510,6 +1511,194 @@ ${lyrics}
                     )
                 );
             };
+
+            function UsageAndBackgroundSection() {
+                const tracker = window.OpenAIUsageTracker;
+                const [usage, setUsage] = useState(() => tracker?.getSnapshot?.() || null);
+                const [dailyLimit, setDailyLimitState] = useState(() => tracker?.getDailyLimit?.() || 0);
+                const [complimentaryEnabled, setComplimentaryEnabledState] = useState(
+                    () => tracker?.isComplimentaryEnabled?.() ?? true
+                );
+                const [complimentaryTier, setComplimentaryTierState] = useState(
+                    () => tracker?.getComplimentaryTier?.() || '1-2'
+                );
+                const [stopAtComplimentary, setStopAtComplimentaryState] = useState(
+                    () => tracker?.shouldStopAtComplimentary?.() || false
+                );
+                const [backgroundEnabled, setBackgroundEnabled] = useState(
+                    () => {
+                        const value = getSetting('background-glossary-enabled', true);
+                        return value === true || value === 'true';
+                    }
+                );
+                const [backgroundModel, setBackgroundModel] = useState(getBackgroundGlossaryModel);
+                const [backgroundWebSearch, setBackgroundWebSearch] = useState(isBackgroundGlossaryWebSearchEnabled);
+                const [autoGlossaryCount, setAutoGlossaryCount] = useState(
+                    () => window.AIAddonManager?.getAutoTranslationEntityGlossary?.().length || 0
+                );
+
+                useEffect(() => {
+                    const refreshUsage = (event) => setUsage(event?.detail || tracker?.getSnapshot?.() || null);
+                    window.addEventListener('ivLyrics:openai-usage-updated', refreshUsage);
+                    const unsubscribeGlossary = window.AIAddonManager?.on?.(
+                        'translation:auto-entity-glossary:changed',
+                        ({ entries }) => setAutoGlossaryCount(Array.isArray(entries) ? entries.length : 0)
+                    );
+                    return () => {
+                        window.removeEventListener('ivLyrics:openai-usage-updated', refreshUsage);
+                        if (typeof unsubscribeGlossary === 'function') unsubscribeGlossary();
+                    };
+                }, []);
+
+                const quotas = usage?.complimentaryQuotas || { standard: 250000, highVolume: 2500000 };
+                const remaining = usage?.complimentaryRemaining || quotas;
+                const currentGroup = tracker?.classifyComplimentaryGroup?.(getSelectedModel()) || 'other';
+
+                const checkboxRow = (label, checked, onChange, description = '') =>
+                    React.createElement('label', {
+                        style: { display: 'flex', flexDirection: 'column', gap: '4px' }
+                    },
+                        React.createElement('span', { style: { display: 'flex', alignItems: 'center', gap: '8px' } },
+                            React.createElement('input', {
+                                type: 'checkbox',
+                                checked,
+                                onChange: event => onChange(event.target.checked)
+                            }),
+                            label
+                        ),
+                        description && React.createElement('small', { style: { opacity: 0.65 } }, description)
+                    );
+
+                return React.createElement('div', {
+                    className: 'ai-addon-setting',
+                    style: { display: 'flex', flexDirection: 'column', gap: '12px' }
+                },
+                    React.createElement('div', { style: { fontWeight: 600 } }, 'OpenAI usage & background glossary'),
+                    usage && React.createElement('div', {
+                        style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: '8px' }
+                    },
+                        React.createElement('div', null,
+                            React.createElement('small', null, 'ivLyrics tokens today (UTC)'),
+                            React.createElement('div', { style: { fontWeight: 600 } }, formatTokenCount(usage.total))
+                        ),
+                        React.createElement('div', null,
+                            React.createElement('small', null, `1M group remaining (${formatTokenCount(quotas.standard)}/day)`),
+                            React.createElement('div', { style: { fontWeight: currentGroup === 'standard' ? 700 : 500 } }, formatTokenCount(remaining.standard))
+                        ),
+                        React.createElement('div', null,
+                            React.createElement('small', null, `10M group remaining (${formatTokenCount(quotas.highVolume)}/day)`),
+                            React.createElement('div', { style: { fontWeight: currentGroup === 'highVolume' ? 700 : 500 } }, formatTokenCount(remaining.highVolume))
+                        )
+                    ),
+                    React.createElement('small', { style: { opacity: 0.7, lineHeight: 1.45 } },
+                        'The remaining complimentary-token values are a local ivLyrics estimate, not account-wide OpenAI usage. Requests made by other apps are invisible here; the OpenAI Usage Dashboard is authoritative.'
+                    ),
+                    React.createElement('div', { className: 'ai-addon-input-group' },
+                        React.createElement('label', { style: { flex: 1 } },
+                            React.createElement('span', null, 'Daily ivLyrics token limit'),
+                            React.createElement('input', {
+                                type: 'number',
+                                min: 0,
+                                step: 1000,
+                                value: dailyLimit,
+                                onChange: event => {
+                                    const value = Math.max(0, Number(event.target.value) || 0);
+                                    setDailyLimitState(value);
+                                    tracker?.setDailyLimit?.(value);
+                                },
+                                placeholder: '0 = unlimited'
+                            })
+                        ),
+                        React.createElement('label', { style: { flex: 1 } },
+                            React.createElement('span', null, 'Complimentary usage tier'),
+                            React.createElement('select', {
+                                value: complimentaryTier,
+                                onChange: event => {
+                                    const value = event.target.value === '3-5' ? '3-5' : '1-2';
+                                    setComplimentaryTierState(value);
+                                    tracker?.setComplimentaryTier?.(value);
+                                }
+                            },
+                                React.createElement('option', { value: '1-2' }, 'Usage tier 1–2'),
+                                React.createElement('option', { value: '3-5' }, 'Usage tier 3–5')
+                            )
+                        )
+                    ),
+                    checkboxRow(
+                        'Track complimentary daily tokens',
+                        complimentaryEnabled,
+                        value => {
+                            setComplimentaryEnabledState(value);
+                            tracker?.setComplimentaryEnabled?.(value);
+                        },
+                        'Only enable this when your OpenAI organization is enrolled in the data-sharing complimentary-token program.'
+                    ),
+                    checkboxRow(
+                        'Stop before the locally tracked complimentary quota is exhausted',
+                        stopAtComplimentary,
+                        value => {
+                            setStopAtComplimentaryState(value);
+                            tracker?.setStopAtComplimentary?.(value);
+                        },
+                        'Uses the local counter and a conservative request reservation. It cannot see token usage from other apps or API keys.'
+                    ),
+                    React.createElement('div', { className: 'ai-addon-input-group' },
+                        React.createElement('button', {
+                            className: 'ai-addon-btn-secondary',
+                            onClick: () => setUsage(tracker?.resetToday?.() || null)
+                        }, 'Reset local counter'),
+                        React.createElement('button', {
+                            className: 'ai-addon-btn-secondary',
+                            onClick: () => window.open('https://platform.openai.com/usage/chat-completions', '_blank')
+                        }, 'Open OpenAI Usage Dashboard')
+                    ),
+                    React.createElement('hr', { style: { width: '100%', opacity: 0.15 } }),
+                    checkboxRow(
+                        'Background proper-noun collection',
+                        backgroundEnabled,
+                        value => {
+                            setBackgroundEnabled(value);
+                            setSetting('background-glossary-enabled', value);
+                        },
+                        'After a song is encountered, collect reusable anime/game proper nouns without blocking lyric display.'
+                    ),
+                    React.createElement('label', null,
+                        React.createElement('span', null, 'Background model'),
+                        React.createElement('input', {
+                            type: 'text',
+                            value: backgroundModel,
+                            onChange: event => {
+                                setBackgroundModel(event.target.value);
+                                setSetting('background-glossary-model', event.target.value);
+                            },
+                            placeholder: 'gpt-5.6-terra'
+                        }),
+                        React.createElement('small', { style: { opacity: 0.65 } },
+                            'Default: gpt-5.6-terra, which belongs to the larger complimentary-token group when eligible.'
+                        )
+                    ),
+                    checkboxRow(
+                        'Verify background terms with OpenAI Web Search',
+                        backgroundWebSearch,
+                        value => {
+                            setBackgroundWebSearch(value);
+                            setSetting('background-glossary-web-search', value);
+                        },
+                        'Off by default. Web Search tool calls have separate API charges and are not made free merely by complimentary model tokens.'
+                    ),
+                    React.createElement('div', { className: 'ai-addon-input-group' },
+                        React.createElement('small', null, `Background glossary: ${autoGlossaryCount} collected entries`),
+                        React.createElement('button', {
+                            className: 'ai-addon-btn-secondary',
+                            disabled: autoGlossaryCount === 0,
+                            onClick: () => {
+                                window.AIAddonManager?.clearAutoTranslationEntityGlossary?.();
+                                setAutoGlossaryCount(0);
+                            }
+                        }, 'Clear collected glossary')
+                    )
+                );
+            }
 
             function FallbackProvidersSection() {
                 const [connections, setConnections] = useState(getFallbackProviders);
