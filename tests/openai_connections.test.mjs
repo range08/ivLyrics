@@ -227,3 +227,66 @@ test('Advanced Body Merge JSON has final precedence over per-task reasoning cont
     assert.equal(h.requests[0].body.reasoning_effort, 'high');
     assert.equal(h.requests[0].body.max_completion_tokens, 1234);
 });
+
+
+test('official OpenAI requests expose streaming usage and report successful token counts', async () => {
+    let addon;
+    const calls = [];
+    const completed = [];
+    const cancelled = [];
+    const settings = new Map(Object.entries({
+        'api-keys': 'official-key',
+        'base-url': 'https://api.openai.com/v1',
+        model: 'gpt-6-sol',
+        'fallback-providers': [],
+    }));
+    const tracker = {
+        beginRequest({ body }) {
+            calls.push({ type: 'begin', body: JSON.parse(JSON.stringify(body)) });
+            return { body, reservationId: 'reservation-1' };
+        },
+        completeRequest(id, detail) {
+            completed.push({ id, detail: JSON.parse(JSON.stringify(detail)) });
+        },
+        cancelRequest(id) {
+            cancelled.push(id);
+        },
+    };
+    const window = {
+        OpenAIUsageTracker: tracker,
+        AIAddonManager: {
+            register(value) { addon = value; },
+            getAddonSetting: (_id, key, fallback) => settings.get(key) ?? fallback,
+            setAddonSetting: (_id, key, value) => settings.set(key, value),
+            getProviderRequestAttempts: () => 1,
+        },
+        async ivLyricsFetch(_url, options) {
+            const body = JSON.parse(options.body);
+            assert.equal(body.stream, true);
+            assert.equal(body.stream_options.include_usage, true);
+            const events = [
+                { choices: [{ delta: { content: 'translated' }, finish_reason: 'stop' }] },
+                { choices: [], usage: { prompt_tokens: 12, completion_tokens: 3, total_tokens: 15 } },
+            ];
+            return new Response(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join('') + 'data: [DONE]\n\n', {
+                headers: { 'Content-Type': 'text/event-stream' },
+            });
+        },
+    };
+    vm.runInNewContext(source.replace(
+        '    registerAddon();',
+        '    window.hooks = { callChatGPTAPIStream };\n    registerAddon();'
+    ), { window, URL, URLSearchParams, TextDecoder, setTimeout, clearTimeout, console });
+
+    const result = await window.hooks.callChatGPTAPIStream('fixture', null, null, 1);
+    assert.equal(result, 'translated');
+    assert.equal(calls.length, 1);
+    assert.equal(completed.length, 1);
+    assert.equal(completed[0].id, 'reservation-1');
+    assert.deepEqual(completed[0].detail, {
+        model: 'gpt-6-sol',
+        usage: { prompt_tokens: 12, completion_tokens: 3, total_tokens: 15 },
+    });
+    assert.deepEqual(cancelled, []);
+    assert.ok(addon);
+});
