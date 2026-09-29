@@ -356,7 +356,7 @@ const getCurrentTranslationTargetLanguage = () => {
 
 const LYRICS_PRONUNCIATION_NOTATION_STORAGE_KEY =
   "ivLyrics:visual:translate:pronunciation-notation";
-const LYRICS_PHONETIC_PROMPT_CACHE_VERSION = 2;
+const LYRICS_PHONETIC_PROMPT_CACHE_VERSION = 3;
 
 const normalizeIvLyricsPronunciationNotation = (value) => {
   const normalized = String(value || "").trim().toLowerCase();
@@ -543,6 +543,7 @@ const getCachedTranslationForText = async ({
 
   try {
     const sourceHash = getTranslationResultCacheHash(text, isPhonetic, {
+      trackId,
       title,
       artist,
       album,
@@ -615,6 +616,7 @@ const setCachedTranslationForText = async ({
 
   try {
     const sourceHash = getTranslationResultCacheHash(text, isPhonetic, {
+      trackId,
       title,
       artist,
       album,
@@ -3349,6 +3351,7 @@ const getDisplayModeCacheKey = (lyricsState = {}, mode = "") => {
     : "";
   const translationSemantics = mode === "gemini_ko"
     ? `:${getTranslationResultCacheHash(getNonSectionLyricsText(sourceLyrics), false, {
+      trackId: Utils.extractTrackId(lyricsState.uri || ""),
       title: lyricsState.title || "",
       artist: lyricsState.artist || "",
       album: lyricsState.album || lyricsState.albumName || "",
