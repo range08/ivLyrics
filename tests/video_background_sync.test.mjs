@@ -10,7 +10,7 @@ assert.ok(helperBoundary > 0, "VideoBackground sync helpers must remain before t
 const context = vm.createContext({});
 vm.runInContext(
     `${source.slice(0, helperBoundary)}\n` +
-    "globalThis.__videoSyncTest = { getLyricsStartTimeSeconds, getVideoSyncOffsetSeconds, resolveVideoSyncState, wrapVideoSyncTime, syncYouTubePlayerTimeline, settleYouTubeHoldPrime };",
+    "globalThis.__videoSyncTest = { getLyricsStartTimeSeconds, getVideoSyncOffsetSeconds, resolveVideoSyncState, wrapVideoSyncTime, syncYouTubePlayerTimeline, settleYouTubeHoldPrime, selectAlbumArtForBackground };",
     context
 );
 
@@ -21,7 +21,22 @@ const {
     wrapVideoSyncTime,
     syncYouTubePlayerTimeline,
     settleYouTubeHoldPrime,
+    selectAlbumArtForBackground,
 } = context.__videoSyncTest;
+
+
+test("uses smaller artwork for blurred fallbacks and preserves xlarge for sharp backgrounds", () => {
+    const metadata = {
+        image_xlarge_url: "xlarge",
+        image_large_url: "large",
+        image_url: "regular",
+    };
+    assert.equal(selectAlbumArtForBackground(metadata, 5), "large");
+    assert.equal(selectAlbumArtForBackground(metadata, 0), "xlarge");
+    assert.equal(selectAlbumArtForBackground({ image_url: "regular" }, 20), "regular");
+    assert.equal(selectAlbumArtForBackground({}, 20), "");
+});
+
 
 test("converts the first lyric timestamp from milliseconds", () => {
     assert.equal(getLyricsStartTimeSeconds(57440), 57.44);
