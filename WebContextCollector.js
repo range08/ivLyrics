@@ -241,17 +241,27 @@
         return matches.filter(Boolean);
     };
 
-    const uniqueUrls = (values) => {
+    const urlDedupeKey = (value) => {
+        try {
+            const parsed = new URL(value);
+            const path = decodeURIComponent(parsed.pathname).replace(/\+/g, ' ').replace(/\/$/, '');
+            return (parsed.hostname.toLocaleLowerCase() + path + parsed.search).toLocaleLowerCase();
+        } catch {
+            return String(value || '').replace(/\/$/, '').toLocaleLowerCase();
+        }
+    };
+
+    const uniqueUrls = (values, limit = MAX_SEARCH_RESULTS) => {
         const output = [];
         const seen = new Set();
         for (const value of values) {
             const normalized = decodeRedirectUrl(value);
             if (!normalized) continue;
-            const key = normalized.replace(/\/$/, '');
+            const key = urlDedupeKey(normalized);
             if (seen.has(key)) continue;
             seen.add(key);
             output.push(normalized);
-            if (output.length >= MAX_SEARCH_RESULTS) break;
+            if (output.length >= limit) break;
         }
         return output;
     };
@@ -330,30 +340,38 @@
                 body = normalizeSpace(root?.textContent || '');
             }
             body = body.slice(0, MAX_PAGE_TEXT_CHARS).trim();
+            const title = extractTitleWithDom(document, url);
             if (body.length < MIN_PAGE_TEXT_CHARS) return null;
+            if (/client challenge|just a moment|captcha|access denied|enable javascript/i.test(title + '\n' + body.slice(0, 500))) {
+                return null;
+            }
             return {
                 url,
-                title: extractTitleWithDom(document, url),
+                title,
                 body
             };
         }
 
         const titleMatch = source.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i);
         const body = stripTagsFallback(source).slice(0, MAX_PAGE_TEXT_CHARS).trim();
+        const title = stripTagsFallback(titleMatch?.[1] || url).slice(0, 300);
         if (body.length < MIN_PAGE_TEXT_CHARS) return null;
+        if (/client challenge|just a moment|captcha|access denied|enable javascript/i.test(title + '\n' + body.slice(0, 500))) {
+            return null;
+        }
         return {
             url,
-            title: stripTagsFallback(titleMatch?.[1] || url).slice(0, 300),
+            title,
             body
         };
     };
 
-    const fetchTopPages = async (urls) => {
+    const fetchTopPages = async (urls, targetCount = TARGET_PAGE_COUNT) => {
         const results = [];
         let cursor = 0;
 
         const worker = async () => {
-            while (results.length < TARGET_PAGE_COUNT) {
+            while (results.length < targetCount) {
                 const index = cursor++;
                 if (index >= urls.length) return;
                 const url = urls[index];
@@ -375,7 +393,7 @@
         let total = 0;
         return results
             .sort((left, right) => left.index - right.index)
-            .slice(0, TARGET_PAGE_COUNT)
+            .slice(0, targetCount)
             .map(page => {
                 const remaining = Math.max(0, MAX_TOTAL_TEXT_CHARS - total);
                 const body = page.body.slice(0, remaining);
@@ -385,11 +403,11 @@
             .filter(page => page.body.length >= MIN_PAGE_TEXT_CHARS);
     };
 
-    const buildQuery = ({ title = '', artist = '', album = '' } = {}) =>
-        [String(title || '').trim(), String(artist || '').trim(), String(album || '').trim()]
-            .filter(Boolean)
-            .map(value => '"' + value.replace(/"/g, '') + '"')
-            .join(' ');
+    const buildQuery = ({ title = '', artist = '', album = '' } = {}) => {
+        const primary = [String(title || '').trim(), String(artist || '').trim()].filter(Boolean);
+        const values = primary.length ? primary : [String(album || '').trim()].filter(Boolean);
+        return values.map(value => '"' + value.replace(/"/g, '') + '"').join(' ');
+    };
 
     const buildContextHash = (context) => simpleHash(JSON.stringify({
         engine: context?.engine || '',
@@ -404,12 +422,33 @@
         const query = buildQuery(params);
         if (!query) return { engine: 'none', query: '', sources: [], hash: 'empty' };
 
-        const searched = await search(query);
-        const sources = await fetchTopPages(searched.urls);
+        const queries = [query, query + ' wiki', query + ' lyrics'];
+        const sources = [];
+        const sourceKeys = new Set();
+        const engines = [];
+
+        for (const currentQuery of queries) {
+            if (sources.length >= TARGET_PAGE_COUNT) break;
+            const searched = await search(currentQuery);
+            if (searched.engine !== 'none') engines.push(searched.engine);
+
+            const freshUrls = uniqueUrls(searched.urls, MAX_SEARCH_RESULTS)
+                .filter(url => !sourceKeys.has(urlDedupeKey(url)));
+            const fetched = await fetchTopPages(freshUrls, TARGET_PAGE_COUNT - sources.length);
+
+            for (const source of fetched) {
+                const key = urlDedupeKey(source.url);
+                if (sourceKeys.has(key)) continue;
+                sourceKeys.add(key);
+                sources.push(source);
+                if (sources.length >= TARGET_PAGE_COUNT) break;
+            }
+        }
+
         const context = {
-            engine: searched.engine,
+            engine: Array.from(new Set(engines)).join('+') || 'none',
             query,
-            sources,
+            sources: sources.slice(0, TARGET_PAGE_COUNT),
             fetchedAt: Date.now()
         };
         context.hash = buildContextHash(context);
