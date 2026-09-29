@@ -197,16 +197,16 @@
         pronunciation: 'adv-reasoning-pronunciation',
         research: 'adv-reasoning-research'
     });
-    const REASONING_LEVELS = new Set(['none', 'low', 'medium', 'high']);
+    const REASONING_LEVELS = new Set(['default', 'none', 'low', 'medium', 'high']);
 
     function normalizeReasoningLevel(value) {
-        const normalized = String(value || 'none').trim().toLowerCase();
-        return REASONING_LEVELS.has(normalized) ? normalized : 'none';
+        const normalized = String(value || 'default').trim().toLowerCase();
+        return REASONING_LEVELS.has(normalized) ? normalized : 'default';
     }
 
     function getReasoningLevel(profile) {
         const key = REASONING_PROFILES[profile];
-        return key ? normalizeReasoningLevel(getSetting(key, 'none')) : 'none';
+        return key ? normalizeReasoningLevel(getSetting(key, 'default')) : 'default';
     }
 
     function isReasoningCapableModel(model) {
@@ -216,11 +216,10 @@
 
     function getReasoningRequestPatch(model, profile, apiMode) {
         const effort = getReasoningLevel(profile);
-        // "None" deliberately preserves the provider/model default and keeps
-        // legacy OpenAI-compatible endpoints working without an unsupported
-        // reasoning parameter. Advanced Body Merge JSON can still explicitly
-        // send reasoning_effort: "none" or reasoning: { effort: "none" }.
-        if (effort === 'none' || !isReasoningCapableModel(model)) return {};
+        // "Default" preserves the provider/model default and keeps legacy
+        // OpenAI-compatible endpoints working without an unsupported reasoning
+        // parameter. Explicit None maps to OpenAI's reasoning effort "none".
+        if (effort === 'default' || !isReasoningCapableModel(model)) return {};
         return apiMode === 'responses'
             ? { reasoning: { effort } }
             : { reasoning_effort: effort };
@@ -1403,7 +1402,8 @@
                                 setSetting(REASONING_PROFILES[profile], next);
                             }
                         },
-                            React.createElement('option', { value: 'none' }, 'None (provider default)'),
+                            React.createElement('option', { value: 'default' }, 'Default (provider/model)'),
+                            React.createElement('option', { value: 'none' }, 'None'),
                             React.createElement('option', { value: 'low' }, 'Low'),
                             React.createElement('option', { value: 'medium' }, 'Medium'),
                             React.createElement('option', { value: 'high' }, 'High')
@@ -1425,7 +1425,7 @@
                             reasoningSelect('Research reasoning', 'research', researchReasoning, setResearchReasoning)
                         ),
                         React.createElement('small', { style: { opacity: 0.65, fontSize: '11px' } },
-                            'None preserves the provider/model default. Low, Medium, and High are sent only to recognized OpenAI reasoning models. Advanced Body Merge JSON is applied afterward and has final precedence.'
+                            'Default preserves the provider/model default. None, Low, Medium, and High are sent only to recognized OpenAI reasoning models. Advanced Body Merge JSON is applied afterward and has final precedence.'
                         ),
                         React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '4px' } },
                             React.createElement('span', { style: { fontSize: '12px' } }, 'Request Body Merge JSON'),

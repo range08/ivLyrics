@@ -175,17 +175,28 @@ test('per-task reasoning controls map to Chat Completions and Responses request 
     }
 });
 
-test('None preserves provider defaults and legacy model compatibility', async () => {
-    const reasoningModel = harness([], () => success('translated'), {
+test('Default preserves provider defaults, while None explicitly disables reasoning', async () => {
+    const providerDefault = harness([], () => success('translated'), {
         model: 'gpt-6-sol',
-        'adv-reasoning-translation': 'none',
+        'adv-reasoning-translation': 'default',
     });
-    await reasoningModel.addon.translateLyrics({
+    await providerDefault.addon.translateLyrics({
         text: 'source',
         translationPrompt: { systemPrompt: 'translate', userPrompt: 'source' },
         wantSmartPhonetic: false,
     });
-    assert.equal(reasoningModel.requests[0].body.reasoning_effort, undefined);
+    assert.equal(providerDefault.requests[0].body.reasoning_effort, undefined);
+
+    const explicitNone = harness([], () => success('translated'), {
+        model: 'gpt-6-sol',
+        'adv-reasoning-translation': 'none',
+    });
+    await explicitNone.addon.translateLyrics({
+        text: 'source',
+        translationPrompt: { systemPrompt: 'translate', userPrompt: 'source' },
+        wantSmartPhonetic: false,
+    });
+    assert.equal(explicitNone.requests[0].body.reasoning_effort, 'none');
 
     const legacyModel = harness([], () => success('translated'), {
         model: 'gpt-4o',
