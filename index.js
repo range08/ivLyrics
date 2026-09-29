@@ -486,7 +486,17 @@ const getTranslationSourceCacheHash = (text) => {
   return `src-${(hash >>> 0).toString(36)}-${value.length.toString(36)}`;
 };
 
-const getTranslationResultCacheHash = (text, isPhonetic = false) => {
+const getTranslationResultCacheHash = (text, isPhonetic = false, context = {}) => {
+  const sharedHasher = window.ivLyricsTranslationCache?.getSourceHash;
+  if (typeof sharedHasher === "function") {
+    return sharedHasher({
+      text,
+      isPhonetic,
+      pronunciationNotation: getCurrentLyricsPronunciationNotation(),
+      ...context,
+    });
+  }
+
   const sourceHash = getTranslationSourceCacheHash(text);
   if (isPhonetic) {
     return `${sourceHash}:phonetic-prompt=${LYRICS_PHONETIC_PROMPT_CACHE_VERSION}:notation=${getCurrentLyricsPronunciationNotation()}`;
@@ -521,6 +531,10 @@ const getCachedTranslationForText = async ({
   isPhonetic = false,
   provider = null,
   text,
+  title = "",
+  artist = "",
+  album = "",
+  sourceLang = null,
 }) => {
   const cacheApi = window.LyricsCache || (typeof LyricsCache !== "undefined" ? LyricsCache : null);
   if (!cacheApi?.getTranslation || !trackId || !lang || !String(text || "").trim()) {
@@ -528,7 +542,12 @@ const getCachedTranslationForText = async ({
   }
 
   try {
-    const sourceHash = getTranslationResultCacheHash(text, isPhonetic);
+    const sourceHash = getTranslationResultCacheHash(text, isPhonetic, {
+      title,
+      artist,
+      album,
+      sourceLang,
+    });
     const cached = await cacheApi.getTranslation(trackId, lang, isPhonetic, provider, sourceHash);
     if (!cached) return null;
 
@@ -578,6 +597,10 @@ const setCachedTranslationForText = async ({
   provider = null,
   text,
   outText,
+  title = "",
+  artist = "",
+  album = "",
+  sourceLang = null,
 }) => {
   const cacheApi = window.LyricsCache || (typeof LyricsCache !== "undefined" ? LyricsCache : null);
   if (
@@ -591,7 +614,12 @@ const setCachedTranslationForText = async ({
   }
 
   try {
-    const sourceHash = getTranslationResultCacheHash(text, isPhonetic);
+    const sourceHash = getTranslationResultCacheHash(text, isPhonetic, {
+      title,
+      artist,
+      album,
+      sourceLang,
+    });
     return await cacheApi.setTranslation(
       trackId,
       lang,
