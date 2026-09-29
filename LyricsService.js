@@ -8143,6 +8143,7 @@
                             trackId: Utils.extractTrackId(info.uri),
                             artist: info.artist,
                             title: info.title,
+                            album: info.album || info.albumName || '',
                             text: lyricsText,
                             wantSmartPhonetic: targetField === 'phonetic',
                             sourceLang: detectedLanguage || 'auto',
@@ -8575,6 +8576,7 @@
     const _translatorInflightRequests = new Map();
     const _translatorPendingRetries = new Map();
     const PHONETIC_PROMPT_CACHE_VERSION = 2;
+    const TRANSLATION_PROMPT_CACHE_VERSION = 2;
 
     function normalizeServicePronunciationNotation(value) {
         const normalized = String(value || '').trim().toLowerCase();
@@ -8926,6 +8928,7 @@
             trackId,
             artist,
             title,
+            album = '',
             text,
             wantSmartPhonetic = false,
             provider = null,
@@ -8945,11 +8948,30 @@
             const translationStyle = wantSmartPhonetic
                 ? null
                 : (window.AIAddonManager?.getTranslationStyle?.() || 'natural');
+            const resolvedSourceLang = sourceLang || (() => {
+                try {
+                    return window.LyricsService?.detectLanguage?.(
+                        String(text).split('\n').map(line => ({ text: line }))
+                    ) || 'auto';
+                } catch {
+                    return 'auto';
+                }
+            })();
+            const glossaryRaw = wantSmartPhonetic
+                ? ''
+                : (window.AIAddonManager?.getTranslationEntityGlossaryRaw?.() || '');
+            const translationContextHash = wantSmartPhonetic
+                ? ''
+                : getLyricsTextCacheHash(JSON.stringify({
+                    title: String(title || ''),
+                    artist: String(artist || ''),
+                    album: String(album || ''),
+                    sourceLang: String(resolvedSourceLang || 'auto'),
+                    glossary: glossaryRaw
+                }));
             const sourceHash = wantSmartPhonetic
                 ? `${sourceTextHash}:phonetic-prompt=${PHONETIC_PROMPT_CACHE_VERSION}:notation=${resolvedPronunciationNotation}`
-                : (translationStyle !== 'natural'
-                    ? `${sourceTextHash}:style=${translationStyle}`
-                    : sourceTextHash);
+                : `${sourceTextHash}:translation-prompt=${TRANSLATION_PROMPT_CACHE_VERSION}:style=${translationStyle}:context=${translationContextHash}`;
 
             let finalTrackId = trackId;
             if (!finalTrackId) {
@@ -8960,15 +8982,6 @@
             }
 
             const userLang = getTranslationTargetLanguage();
-            const resolvedSourceLang = sourceLang || (() => {
-                try {
-                    return window.LyricsService?.detectLanguage?.(
-                        String(text).split('\n').map(line => ({ text: line }))
-                    ) || 'auto';
-                } catch {
-                    return 'auto';
-                }
-            })();
 
             // 로컬 캐시 확인
             if (!ignoreCache) {
@@ -9007,6 +9020,7 @@
                             trackId: finalTrackId,
                             artist,
                             title,
+                            album,
                             text,
                             lang: userLang,
                             wantSmartPhonetic,
