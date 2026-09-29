@@ -308,13 +308,17 @@ body.${PANEL_ACTIVE_BODY_CLASS} [data-testid="lyrics-npv-section"] {
 
 .ivlyrics-panel-bg-blob {
   position: absolute;
+  top: 0;
+  left: 0;
   border-radius: 50%;
   filter: blur(34px);
   opacity: 0.82;
   mix-blend-mode: screen;
   backface-visibility: hidden;
   -webkit-backface-visibility: hidden;
-  will-change: transform, filter;
+  /* Blur is static. Keep it rasterized once and animate only the compositor
+     transform instead of changing top/left every frame. */
+  will-change: transform;
 }
 
 .ivlyrics-panel-bg-blob.blob-1 { width: 92%; height: 92%; background: rgba(var(--ivlyrics-panel-c2, 60, 40, 70), 1); animation: ivlyrics-panel-blob-1 18s ease-in-out infinite; }
@@ -325,45 +329,56 @@ body.${PANEL_ACTIVE_BODY_CLASS} [data-testid="lyrics-npv-section"] {
 .ivlyrics-panel-bg-blob.blob-6 { width: 100%; height: 100%; background: rgba(var(--ivlyrics-panel-c3, 20, 50, 60), 0.52); filter: blur(38px); animation: ivlyrics-panel-blob-6 20s ease-in-out infinite; }
 
 @keyframes ivlyrics-panel-blob-1 {
-  0%, 100% { top: -28%; left: -28%; transform: scale(1); }
-  20% { top: 4%; left: 46%; transform: scale(1.12); }
-  40% { top: 44%; left: 24%; transform: scale(0.9); }
-  60% { top: 20%; left: -10%; transform: scale(1.14); }
-  80% { top: -12%; left: 18%; transform: scale(0.96); }
+  0%, 100% { transform: translate3d(-30.435%, -30.435%, 0) scale(1); }
+  20% { transform: translate3d(50%, 4.348%, 0) scale(1.12); }
+  40% { transform: translate3d(26.087%, 47.826%, 0) scale(0.9); }
+  60% { transform: translate3d(-10.87%, 21.739%, 0) scale(1.14); }
+  80% { transform: translate3d(19.565%, -13.043%, 0) scale(0.96); }
 }
 
 @keyframes ivlyrics-panel-blob-2 {
-  0%, 100% { top: 46%; left: 56%; transform: scale(1); }
-  25% { top: 16%; left: -18%; transform: scale(1.2); }
-  50% { top: -18%; left: 36%; transform: scale(0.86); }
-  75% { top: 40%; left: 68%; transform: scale(1.1); }
+  0%, 100% { transform: translate3d(68.293%, 56.098%, 0) scale(1); }
+  25% { transform: translate3d(-21.951%, 19.512%, 0) scale(1.2); }
+  50% { transform: translate3d(43.902%, -21.951%, 0) scale(0.86); }
+  75% { transform: translate3d(82.927%, 48.78%, 0) scale(1.1); }
 }
 
 @keyframes ivlyrics-panel-blob-3 {
-  0%, 100% { top: 58%; left: -12%; transform: scale(1); }
-  33% { top: -24%; left: 58%; transform: scale(1.28); }
-  66% { top: 36%; left: 38%; transform: scale(0.82); }
+  0%, 100% { transform: translate3d(-19.355%, 93.548%, 0) scale(1); }
+  33% { transform: translate3d(93.548%, -38.71%, 0) scale(1.28); }
+  66% { transform: translate3d(61.29%, 58.065%, 0) scale(0.82); }
 }
 
 @keyframes ivlyrics-panel-blob-4 {
-  0%, 100% { top: -34%; left: 66%; transform: scale(1); }
-  20% { top: 58%; left: 48%; transform: scale(0.9); }
-  40% { top: 36%; left: -22%; transform: scale(1.18); }
-  60% { top: -12%; left: 28%; transform: scale(1.05); }
-  80% { top: 18%; left: 78%; transform: scale(0.86); }
+  0%, 100% { transform: translate3d(78.571%, -40.476%, 0) scale(1); }
+  20% { transform: translate3d(57.143%, 69.048%, 0) scale(0.9); }
+  40% { transform: translate3d(-26.19%, 42.857%, 0) scale(1.18); }
+  60% { transform: translate3d(33.333%, -14.286%, 0) scale(1.05); }
+  80% { transform: translate3d(92.857%, 21.429%, 0) scale(0.86); }
 }
 
 @keyframes ivlyrics-panel-blob-5 {
-  0%, 100% { top: 68%; left: 48%; transform: scale(1); }
-  25% { top: 28%; left: 78%; transform: scale(1.24); }
-  50% { top: -12%; left: 18%; transform: scale(0.9); }
-  75% { top: 48%; left: -16%; transform: scale(1.1); }
+  0%, 100% { transform: translate3d(82.759%, 117.241%, 0) scale(1); }
+  25% { transform: translate3d(134.483%, 48.276%, 0) scale(1.24); }
+  50% { transform: translate3d(31.034%, -20.69%, 0) scale(0.9); }
+  75% { transform: translate3d(-27.586%, 82.759%, 0) scale(1.1); }
 }
 
 @keyframes ivlyrics-panel-blob-6 {
-  0%, 100% { top: 24%; left: 24%; transform: scale(1); }
-  33% { top: -24%; left: -22%; transform: scale(1.15); }
-  66% { top: 58%; left: 58%; transform: scale(0.92); }
+  0%, 100% { transform: translate3d(24%, 24%, 0) scale(1); }
+  33% { transform: translate3d(-22%, -24%, 0) scale(1.15); }
+  66% { transform: translate3d(58%, 58%, 0) scale(0.92); }
+}
+
+.ivlyrics-panel-lyrics-section.playback-paused .ivlyrics-panel-bg-blob,
+.ivlyrics-panel-lyrics-section.motion-reduced .ivlyrics-panel-bg-blob {
+  animation-play-state: paused;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ivlyrics-panel-bg-blob {
+    animation-play-state: paused;
+  }
 }
 
 .ivlyrics-panel-header,

@@ -3482,14 +3482,17 @@ body:has(#lyrics-fullscreen-container) [data-tippy-root] {
 .ivlyrics-video-background-fallback {
   backface-visibility: hidden;
   -webkit-backface-visibility: hidden;
-  will-change: opacity;
 }
 
+/* Keep full-screen artwork out of the permanent will-change budget. Promote it
+   only for the short hand-off where opacity/transform actually animate. */
 .ivlyrics-video-background-fallback-incoming {
+  will-change: opacity, transform;
   animation: ivlyricsBackgroundFallbackIn 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 .ivlyrics-video-background-fallback-outgoing {
+  will-change: opacity;
   animation: ivlyricsBackgroundFallbackOut 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 

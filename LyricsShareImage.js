@@ -169,105 +169,96 @@ const LyricsShareImage = (() => {
   }
 
   // 앨범 커버에서 주요 색상 추출
-  async function extractColors(imageUrl) {
-    const convertedUrl = convertImageUrl(imageUrl);
-    
-    return new Promise((resolve) => {
-      if (!convertedUrl) {
-        resolve({
-          primary: '#1a1a1a',
-          darker: '#000000',
-          lighter: '#333333',
-          isDark: true,
-          textColor: '#ffffff',
-          subTextColor: 'rgba(255,255,255,0.7)',
-        });
-        return;
+  const FALLBACK_COLORS = Object.freeze({
+    primary: '#1a1a1a',
+    darker: '#000000',
+    lighter: '#333333',
+    isDark: true,
+    textColor: '#ffffff',
+    subTextColor: 'rgba(255,255,255,0.7)',
+  });
+
+  async function extractColors(imageOrUrl) {
+    try {
+      const img = typeof imageOrUrl === 'string'
+        ? await loadImage(imageOrUrl)
+        : imageOrUrl;
+      if (!img) return { ...FALLBACK_COLORS };
+
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      canvas.width = 50;
+      canvas.height = 50;
+      ctx.drawImage(img, 0, 0, 50, 50);
+
+      const imageData = ctx.getImageData(0, 0, 50, 50).data;
+      let r = 0, g = 0, b = 0, count = 0;
+
+      // 샘플링하여 평균 색상 계산
+      for (let i = 0; i < imageData.length; i += 16) {
+        r += imageData[i];
+        g += imageData[i + 1];
+        b += imageData[i + 2];
+        count++;
       }
-      
-      const img = new Image();
-      img.crossOrigin = 'anonymous';
-      img.onload = () => {
-        try {
-          const canvas = document.createElement('canvas');
-          const ctx = canvas.getContext('2d');
-          canvas.width = 50;
-          canvas.height = 50;
-          ctx.drawImage(img, 0, 0, 50, 50);
 
-          const imageData = ctx.getImageData(0, 0, 50, 50).data;
-          let r = 0, g = 0, b = 0, count = 0;
+      r = Math.floor(r / count);
+      g = Math.floor(g / count);
+      b = Math.floor(b / count);
 
-        // 샘플링하여 평균 색상 계산
-        for (let i = 0; i < imageData.length; i += 16) {
-          r += imageData[i];
-          g += imageData[i + 1];
-          b += imageData[i + 2];
-          count++;
-        }
+      const brightness = (r * 299 + g * 587 + b * 114) / 1000;
+      const isDark = brightness < 128;
+      // Release the tiny readback surface immediately.
+      canvas.width = 1;
+      canvas.height = 1;
 
-        r = Math.floor(r / count);
-        g = Math.floor(g / count);
-        b = Math.floor(b / count);
-
-        // 밝기 계산
-        const brightness = (r * 299 + g * 587 + b * 114) / 1000;
-        const isDark = brightness < 128;
-
-        resolve({
-          primary: `rgb(${r}, ${g}, ${b})`,
-          darker: `rgb(${Math.floor(r * 0.3)}, ${Math.floor(g * 0.3)}, ${Math.floor(b * 0.3)})`,
-          lighter: `rgb(${Math.min(255, r + 50)}, ${Math.min(255, g + 50)}, ${Math.min(255, b + 50)})`,
-          isDark,
-          textColor: isDark ? '#ffffff' : '#000000',
-          subTextColor: isDark ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.6)',
-        });
-        } catch (e) {
-          console.warn('[LyricsShareImage] Color extraction failed:', e);
-          resolve({
-            primary: '#1a1a1a',
-            darker: '#000000',
-            lighter: '#333333',
-            isDark: true,
-            textColor: '#ffffff',
-            subTextColor: 'rgba(255,255,255,0.7)',
-          });
-        }
+      return {
+        primary: `rgb(${r}, ${g}, ${b})`,
+        darker: `rgb(${Math.floor(r * 0.3)}, ${Math.floor(g * 0.3)}, ${Math.floor(b * 0.3)})`,
+        lighter: `rgb(${Math.min(255, r + 50)}, ${Math.min(255, g + 50)}, ${Math.min(255, b + 50)})`,
+        isDark,
+        textColor: isDark ? '#ffffff' : '#000000',
+        subTextColor: isDark ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.6)',
       };
-      img.onerror = () => {
-        console.warn('[LyricsShareImage] Image load failed for color extraction');
-        resolve({
-          primary: '#1a1a1a',
-          darker: '#000000',
-          lighter: '#333333',
-          isDark: true,
-          textColor: '#ffffff',
-          subTextColor: 'rgba(255,255,255,0.7)',
-        });
-      };
-      img.src = convertedUrl;
-    });
+    } catch (e) {
+      console.warn('[LyricsShareImage] Color extraction failed:', e);
+      return { ...FALLBACK_COLORS };
+    }
   }
 
   // 이미지 로드 헬퍼
+  const IMAGE_CACHE_LIMIT = 3;
+  const imageLoadCache = new Map();
+
   function loadImage(url) {
     const convertedUrl = convertImageUrl(url);
-    
-    return new Promise((resolve, reject) => {
-      if (!convertedUrl) {
-        reject(new Error('Invalid image URL'));
-        return;
-      }
-      
+    if (!convertedUrl) return Promise.reject(new Error('Invalid image URL'));
+
+    const cached = imageLoadCache.get(convertedUrl);
+    if (cached) {
+      imageLoadCache.delete(convertedUrl);
+      imageLoadCache.set(convertedUrl, cached);
+      return cached;
+    }
+
+    const promise = new Promise((resolve, reject) => {
       const img = new Image();
       img.crossOrigin = 'anonymous';
+      img.decoding = 'async';
       img.onload = () => resolve(img);
       img.onerror = (e) => {
+        imageLoadCache.delete(convertedUrl);
         console.warn('[LyricsShareImage] Image load failed:', convertedUrl);
         reject(e);
       };
       img.src = convertedUrl;
     });
+
+    imageLoadCache.set(convertedUrl, promise);
+    while (imageLoadCache.size > IMAGE_CACHE_LIMIT) {
+      imageLoadCache.delete(imageLoadCache.keys().next().value);
+    }
+    return promise;
   }
 
   // 텍스트 줄바꿈 처리
@@ -354,11 +345,14 @@ const LyricsShareImage = (() => {
     // 이미지 너비: optionWidth > customSettings.imageWidth > cfg.imageWidth
     const width = optionWidth || cfg.imageWidth || 1080;
     
-    const colors = await extractColors(albumCover);
+    const coverImg = albumCover
+      ? await loadImage(albumCover).catch(() => null)
+      : null;
+    const colors = await extractColors(coverImg);
 
-    // 캔버스 생성
+    // 캔버스 생성. 불투명 프리셋은 alpha 채널을 생략해 메모리 대역폭을 줄인다.
     const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { alpha: cfg.backgroundType === 'transparent' });
 
     // 폰트 설정
     const fontFamily = '"Pretendard Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
@@ -417,12 +411,12 @@ const LyricsShareImage = (() => {
     canvas.height = calculatedHeight;
 
     // ========== 배경 렌더링 ==========
-    await drawBackground(ctx, cfg, albumCover, colors, width, calculatedHeight);
+    await drawBackground(ctx, cfg, coverImg, colors, width, calculatedHeight);
 
     let currentY = cfg.padding;
 
     // ========== 헤더 (앨범 커버 + 곡 정보) ==========
-    currentY = await drawHeader(ctx, cfg, albumCover, trackName, artistName, width, currentY, fontFamily);
+    currentY = await drawHeader(ctx, cfg, coverImg, trackName, artistName, width, currentY, fontFamily);
 
     // ========== 가사 렌더링 ==========
     const textX = cfg.lyricsAlign === 'center' ? width / 2 : cfg.padding;
@@ -487,59 +481,50 @@ const LyricsShareImage = (() => {
   }
 
   // 블러 이미지 생성 (OffscreenCanvas 사용)
-  async function createBlurredImage(img, blurAmount, targetWidth, targetHeight) {
-    if (blurAmount <= 0) return img;
-    
-    // 블러용 임시 캔버스 생성
-    const tempCanvas = document.createElement('canvas');
-    const tempCtx = tempCanvas.getContext('2d');
-    
-    // 블러를 위해 약간 더 크게 만들어서 가장자리 문제 방지
-    const padding = blurAmount * 2;
-    tempCanvas.width = targetWidth + padding * 2;
-    tempCanvas.height = targetHeight + padding * 2;
-    
-    // 이미지를 확대해서 그림
-    const scale = Math.max(tempCanvas.width / img.width, tempCanvas.height / img.height) * 1.1;
+  function drawCoverCrop(ctx, img, x, y, width, height, scaleBoost = 1) {
+    const scale = Math.max(width / img.width, height / img.height) * scaleBoost;
     const imgW = img.width * scale;
     const imgH = img.height * scale;
-    tempCtx.drawImage(img, (tempCanvas.width - imgW) / 2, (tempCanvas.height - imgH) / 2, imgW, imgH);
-    
-    // CSS 블러 필터 적용
-    tempCtx.filter = `blur(${blurAmount}px)`;
-    tempCtx.drawImage(tempCanvas, 0, 0);
-    tempCtx.filter = 'none';
-    
-    return tempCanvas;
+    ctx.drawImage(img, x + (width - imgW) / 2, y + (height - imgH) / 2, imgW, imgH);
+  }
+
+  function drawBlurredCover(ctx, img, x, y, width, height, blurAmount) {
+    const blur = Math.max(0, Number(blurAmount) || 0);
+    if (!blur) {
+      drawCoverCrop(ctx, img, x, y, width, height, 1.2);
+      return;
+    }
+
+    // Blur directly into the destination instead of allocating another canvas
+    // as large as the final share image. Overscan keeps filter edges outside
+    // the visible crop while avoiding a second multi-megapixel backing store.
+    const overscan = Math.ceil(blur * 2);
+    ctx.save();
+    ctx.filter = `blur(${blur}px)`;
+    drawCoverCrop(
+      ctx,
+      img,
+      x - overscan,
+      y - overscan,
+      width + overscan * 2,
+      height + overscan * 2,
+      1.08
+    );
+    ctx.restore();
   }
 
   // 배경 그리기
-  async function drawBackground(ctx, cfg, albumCover, colors, width, height) {
+  async function drawBackground(ctx, cfg, coverImg, colors, width, height) {
     const bgType = cfg.backgroundType;
     const blurAmount = cfg.backgroundBlur || 30;
-    
-    if (bgType === 'coverBlur' && albumCover) {
+
+    if (bgType === 'coverBlur' && coverImg) {
       try {
-        const coverImg = await loadImage(albumCover);
-        
-        // 블러가 적용된 배경 생성
-        if (blurAmount > 0) {
-          const blurredBg = await createBlurredImage(coverImg, blurAmount, width, height);
-          // 블러된 이미지 중앙 부분만 사용
-          const padding = blurAmount * 2;
-          ctx.drawImage(blurredBg, padding, padding, width, height, 0, 0, width, height);
-        } else {
-          // 블러 없이 커버 이미지 배경
-          const scale = Math.max(width / coverImg.width, height / coverImg.height) * 1.2;
-          const imgW = coverImg.width * scale;
-          const imgH = coverImg.height * scale;
-          ctx.drawImage(coverImg, (width - imgW) / 2, (height - imgH) / 2, imgW, imgH);
-        }
-        
+        drawBlurredCover(ctx, coverImg, 0, 0, width, height, blurAmount);
+
         ctx.fillStyle = `rgba(0, 0, 0, ${cfg.backgroundOpacity})`;
         ctx.fillRect(0, 0, width, height);
       } catch (e) {
-        // 폴백
         ctx.fillStyle = cfg.backgroundColor || '#121212';
         ctx.fillRect(0, 0, width, height);
       }
@@ -550,7 +535,7 @@ const LyricsShareImage = (() => {
       grad.addColorStop(1, colors.darker);
       ctx.fillStyle = grad;
       ctx.fillRect(0, 0, width, height);
-      
+
       ctx.fillStyle = `rgba(0, 0, 0, ${cfg.backgroundOpacity * 0.5})`;
       ctx.fillRect(0, 0, width, height);
     } else if (bgType === 'solid') {
@@ -565,12 +550,11 @@ const LyricsShareImage = (() => {
   }
 
   // 헤더 그리기
-  async function drawHeader(ctx, cfg, albumCover, trackName, artistName, width, startY, fontFamily) {
+  async function drawHeader(ctx, cfg, coverImg, trackName, artistName, width, startY, fontFamily) {
     let currentY = startY;
     
-    if (cfg.showCover && cfg.coverPosition !== 'hidden' && albumCover) {
+    if (cfg.showCover && cfg.coverPosition !== 'hidden' && coverImg) {
       try {
-        const coverImg = await loadImage(albumCover);
         let coverX;
         
         if (cfg.coverPosition === 'center') {
@@ -589,11 +573,9 @@ const LyricsShareImage = (() => {
         roundRect(ctx, coverX, currentY, cfg.coverSize, cfg.coverSize, cfg.coverRadius);
         ctx.clip();
         
-        // 커버 블러 적용
+        // 커버 블러 적용. 별도 임시 캔버스를 만들지 않고 현재 클립에 직접 그린다.
         if (cfg.coverBlur && cfg.coverBlur > 0) {
-          const blurredCover = await createBlurredImage(coverImg, cfg.coverBlur, cfg.coverSize, cfg.coverSize);
-          const padding = cfg.coverBlur * 2;
-          ctx.drawImage(blurredCover, padding, padding, cfg.coverSize, cfg.coverSize, coverX, currentY, cfg.coverSize, cfg.coverSize);
+          drawBlurredCover(ctx, coverImg, coverX, currentY, cfg.coverSize, cfg.coverSize, cfg.coverBlur);
         } else {
           ctx.drawImage(coverImg, coverX, currentY, cfg.coverSize, cfg.coverSize);
         }

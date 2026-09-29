@@ -47,6 +47,16 @@ const VIDEO_SYNC_SEEK_THRESHOLD_SECONDS = 0.5;
 // moment to produce its first frame.
 const FALLBACK_CROSSFADE_MS = 420;
 
+// Blurred artwork does not benefit from decoding the largest Spotify image.
+// Prefer the medium/regular asset while blur is active, but keep xlarge for a
+// sharp cover background so image quality is unchanged when blur is disabled.
+const selectAlbumArtForBackground = (metadata = {}, blurAmount = 0) => {
+    const blurred = Number(blurAmount) > 0;
+    return blurred
+        ? (metadata.image_large_url || metadata.image_url || metadata.image_xlarge_url || "")
+        : (metadata.image_xlarge_url || metadata.image_large_url || metadata.image_url || "");
+};
+
 const resolveVideoSyncState = ({
     spotifyTime,
     lyricsStartTime,
@@ -290,7 +300,9 @@ const VideoBackground = ({ trackUri, firstLyricTime, brightness, blurAmount, cov
     const videoScaleRatio = videoScaleValue / 100;
     const videoScaleTransform = videoScaleRatio !== 1 ? ` scale(${videoScaleRatio})` : "";
     const blurCompositeStyle = blurValue ? {
-        willChange: "filter, transform, opacity",
+        // The filter value is static for a render. Hint only properties that
+        // actually animate so Chromium does not reserve another filter-change layer.
+        willChange: "transform, opacity",
         backfaceVisibility: "hidden",
         WebkitBackfaceVisibility: "hidden",
         contain: "paint",
@@ -299,11 +311,10 @@ const VideoBackground = ({ trackUri, firstLyricTime, brightness, blurAmount, cov
         ? `translate3d(-50%, -50%, 0)${videoScaleTransform}`
         : (blurValue || videoScaleTransform ? `translateZ(0)${videoScaleTransform}` : undefined);
 
-    const albumArtUrl =
-        Spicetify.Player.data?.item?.metadata?.image_xlarge_url ||
-        Spicetify.Player.data?.item?.metadata?.image_large_url ||
-        Spicetify.Player.data?.item?.metadata?.image_url ||
-        "";
+    const albumArtUrl = selectAlbumArtForBackground(
+        Spicetify.Player.data?.item?.metadata || {},
+        blurValue
+    );
 
     // Capture the previous artwork before the new track is revealed.  The
     // old layer is removed after a single compositor-only crossfade.
