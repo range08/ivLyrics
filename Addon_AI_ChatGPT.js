@@ -629,6 +629,7 @@
                     lastError = e;
                     window.__ivLyricsDebugLog?.(`[ChatGPT Addon] Attempt ${attempt + 1} failed:`, e.message);
 
+                    if (e.code === 'IVLYRICS_DAILY_TOKEN_LIMIT') throw e;
                     if (e.message.includes('Invalid API key') || e.message.includes('permission denied')) {
                         throw e;
                     }
@@ -876,6 +877,7 @@
                     lastError = error;
                     window.__ivLyricsDebugLog?.(`[ChatGPT Addon] Responses API attempt ${attempt + 1} failed:`, error.message);
                     resetProvisionalOutput(attempt < maxRetries - 1 ? 'retry' : 'failed', error);
+                    if (error.code === 'IVLYRICS_DAILY_TOKEN_LIMIT') throw error;
                     if (/invalid api key|permission denied/i.test(error.message)) throw error;
                     if (attempt < maxRetries - 1) await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
                 }
@@ -1090,6 +1092,7 @@
                     lastError = e;
                     window.__ivLyricsDebugLog?.(`[ChatGPT Addon] Stream attempt ${attempt + 1} failed:`, e.message);
                     resetProvisionalOutput(attempt < maxRetries - 1 ? 'retry' : 'failed', e);
+                    if (e.code === 'IVLYRICS_DAILY_TOKEN_LIMIT') throw e;
                     if (e.message.includes('Invalid API key') || e.message.includes('permission denied')) throw e;
                     if (attempt < maxRetries - 1) await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
                 }
@@ -1334,6 +1337,7 @@ ${lyrics}
                 };
             } catch (error) {
                 cancelTrackedOpenAIRequest(baseUrl, usageReservationId);
+                if (error?.code === 'IVLYRICS_DAILY_TOKEN_LIMIT') throw error;
                 lastError = error;
             }
         }
