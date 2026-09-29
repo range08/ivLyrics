@@ -208,7 +208,11 @@
                 highVolume: Math.max(0, quotas.highVolume - state.byGroup.highVolume)
             },
             reserved: getReserved(),
-            resetAtUtc: state.day + "T24:00:00Z"
+            resetAtUtc: new Date(Date.UTC(
+                new Date().getUTCFullYear(),
+                new Date().getUTCMonth(),
+                new Date().getUTCDate() + 1
+            )).toISOString()
         };
     };
 
