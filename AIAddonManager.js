@@ -1922,7 +1922,9 @@ Use the title, artist, album, source-language hint, and the complete lyrics toge
 PROPER NOUN POLICY:
 - Before translating individual lines, read the complete song context and lyrics and resolve recurring proper nouns consistently.
 - Entries in <entity_glossary> are authoritative user mappings. Use target exactly for the matching source entity. If an entry has a work field, apply it only when that work is compatible with the song context.
+- If both a work-scoped and an unscoped glossary entry match the same source entity, prefer the compatible work-scoped entry.
 - When a well-established official ${langInfo.name} localization is known with high confidence from the supplied song/franchise context, use that established form consistently.
+- Do not semantically translate a proper name merely because its spelling is composed of ordinary dictionary words.
 - Never invent or guess an "official" localization. When no reliable localized form is known, transliterate the proper noun naturally into the target writing system instead of literally translating the dictionary meanings of its component words.
 - Stylized names, acronyms, product names, fictional terminology, and intentional Latin-script names may remain unchanged when that is the established form.
 - If a token could be either ordinary vocabulary or a name, use the full-song context, capitalization/script, repetition, and nearby references to decide. Do not force a name interpretation without contextual evidence.
