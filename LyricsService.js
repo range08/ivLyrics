@@ -8652,10 +8652,12 @@
         const resolvedSourceLang = resolveTranslationSourceLanguage(text, sourceLang);
         const context = resolveTranslationTrackContext({ title, artist, album });
         const glossaryEntries = window.AIAddonManager?.getTranslationEntityGlossary?.() || [];
+        const autoGlossaryEntries = window.AIAddonManager?.getAutoTranslationEntityGlossary?.() || [];
         const contextHash = getLyricsTextCacheHash(JSON.stringify({
             ...context,
             sourceLang: String(resolvedSourceLang || 'auto'),
-            glossary: glossaryEntries
+            glossary: glossaryEntries,
+            autoGlossary: autoGlossaryEntries
         }));
         return `${sourceTextHash}:translation-prompt=${TRANSLATION_PROMPT_CACHE_VERSION}:style=${style}:context=${contextHash}`;
     }
@@ -9040,6 +9042,21 @@
             }
 
             const userLang = getTranslationTargetLanguage();
+
+            // Translation glossary enrichment is intentionally detached from
+            // the foreground translation result. It may run even when the
+            // translated lyrics themselves are already cached.
+            try {
+                void window.AIAddonManager?.scheduleTranslationEntityCollection?.({
+                    trackId: finalTrackId,
+                    artist: trackContext.artist,
+                    title: trackContext.title,
+                    album: trackContext.album,
+                    text,
+                    lang: userLang,
+                    sourceLang: resolvedSourceLang
+                });
+            } catch {}
 
             // 로컬 캐시 확인
             if (!ignoreCache) {
