@@ -7110,7 +7110,7 @@ const SETTINGS_MODAL_CSS = `
     box-shadow: none !important;
 }
 
-@media (max-width: 900px) {
+@media (max-width: 1100px) {
     .ivlyrics-settings-modal-shell:has(#${APP_NAME}-config-container) {
         width: min(calc(100vw - 20px), 820px) !important;
         max-width: calc(100vw - 20px) !important;

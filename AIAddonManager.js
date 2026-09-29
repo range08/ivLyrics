@@ -3289,7 +3289,11 @@ ${normalizedText}
             for (const addon of providers) {
                 const method = typeof addon.generateResearch === 'function' ? 'generateResearch' : 'generateTMI';
                 if (typeof addon[method] !== 'function') continue;
-                let activeWebSearchStatus = 'searching';
+                const supportsResearchWebSearch = addon.supports?.researchWebSearch === true;
+                const webSearchEnabled = supportsResearchWebSearch
+                    && (typeof this.isCapabilityEnabled !== 'function'
+                        || this.isCapabilityEnabled(addon.id, 'researchWebSearch'));
+                let activeWebSearchStatus = webSearchEnabled ? 'searching' : 'disabled';
 
                 const reportProgress = (partial, details = {}) => {
                     if (typeof params?.onProgress !== 'function') return;
@@ -3325,16 +3329,16 @@ ${normalizedText}
                         tmiPrompt: researchPrompt
                     });
 
-                    reportProgress(null, { reset: true, webSearchStatus: 'searching' });
+                    reportProgress(null, { reset: true, webSearchStatus: activeWebSearchStatus });
 
                     let result;
                     try {
-                        result = await callResearchProvider(true);
+                        result = await callResearchProvider(webSearchEnabled);
                     } catch (webSearchError) {
                         // A generation failure (for example MAX_TOKENS) is not a
                         // web-search failure. Retrying it without search would run
                         // the same provider twice and discard the streamed draft.
-                        if (!isResearchWebSearchFailure(webSearchError)) {
+                        if (!webSearchEnabled || !isResearchWebSearchFailure(webSearchError)) {
                             throw webSearchError;
                         }
                         activeWebSearchStatus = 'fallback';
@@ -3357,7 +3361,9 @@ ${normalizedText}
                         generated_at: new Date().toISOString(),
                         schema: RESEARCH_CACHE_VERSION,
                         streaming: false,
-                        web_search: activeWebSearchStatus === 'fallback' ? 'fallback' : 'used'
+                        web_search: activeWebSearchStatus === 'fallback'
+                            ? 'fallback'
+                            : (webSearchEnabled ? 'used' : 'disabled')
                     };
 
                     reportProgress(normalized, {

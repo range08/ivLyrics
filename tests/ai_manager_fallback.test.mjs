@@ -156,3 +156,66 @@ test("cultural annotations preserve loading callbacks, normalization failures an
 		if (scenario.selected !== undefined) assert.deepEqual(actual.callIds, ["community.plugin:second"]);
 	}
 });
+
+
+test("research web search capability toggle controls the provider webSearch flag", async () => {
+	const storage = new Map();
+	const window = {};
+	vm.runInNewContext(source, {
+		window,
+		Spicetify: {
+			LocalStorage: {
+				get: key => storage.get(key),
+				set: (key, value) => storage.set(key, value),
+			},
+		},
+		console,
+		setTimeout,
+		clearTimeout,
+	});
+
+	const manager = window.AIAddonManager;
+	await manager._initPromise;
+
+	const calls = [];
+	const addon = {
+		id: "fixture.research",
+		name: "Fixture Research",
+		author: "fixture",
+		version: "1.0",
+		description: "fixture",
+		supports: { tmi: true, researchWebSearch: true },
+		getSettingsUI() {},
+		async generateTMI({ webSearch }) {
+			calls.push(webSearch);
+			return { summary: "fixture research" };
+		},
+	};
+
+	assert.equal(manager.register(addon), true);
+	manager.setProviderEnabled(addon.id, true);
+	manager.setProviderOrder([addon.id]);
+
+	manager.setCapabilityEnabled(addon.id, "researchWebSearch", false);
+	const disabled = await manager.generateResearch({
+		trackId: "fixture-disabled",
+		title: "Fixture song",
+		artist: "Fixture artist",
+		lang: "en",
+		lyrics: [],
+	});
+	assert.deepEqual(calls, [false]);
+	assert.equal(disabled._research.web_search, "disabled");
+
+	calls.length = 0;
+	manager.setCapabilityEnabled(addon.id, "researchWebSearch", true);
+	const enabled = await manager.generateResearch({
+		trackId: "fixture-enabled",
+		title: "Fixture song",
+		artist: "Fixture artist",
+		lang: "en",
+		lyrics: [],
+	});
+	assert.deepEqual(calls, [true]);
+	assert.equal(enabled._research.web_search, "used");
+});
