@@ -77,7 +77,11 @@
     const DEFAULT_TRANSLATION_STYLE = TRANSLATION_STYLES.NATURAL;
     const TRANSLATION_STYLE_STORAGE_KEY = `${STORAGE_PREFIX}translation-style`;
     const TRANSLATION_ENTITY_GLOSSARY_STORAGE_KEY = `${STORAGE_PREFIX}translation-entity-glossary`;
+    const TRANSLATION_AUTO_ENTITY_GLOSSARY_STORAGE_KEY = `${STORAGE_PREFIX}translation-auto-entity-glossary`;
+    const TRANSLATION_ENTITY_COLLECTION_SEEN_KEY = `${STORAGE_PREFIX}translation-entity-collection-seen`;
     const TRANSLATION_ENTITY_GLOSSARY_MAX_ENTRIES = 200;
+    const TRANSLATION_AUTO_ENTITY_GLOSSARY_MAX_ENTRIES = 1000;
+    const TRANSLATION_ENTITY_COLLECTION_MAX_SEEN = 500;
     const TRANSLATION_ENTITY_GLOSSARY_MAX_FIELD_LENGTH = 160;
     const VALID_TRANSLATION_STYLES = new Set(Object.values(TRANSLATION_STYLES));
     const DEFAULT_PROVIDER_RETRY_COUNT = 2;
@@ -871,6 +875,51 @@
 
     const normalizePromptContextText = (value) =>
         String(value ?? '').replace(/[\r\n\t]+/g, ' ').replace(/\s{2,}/g, ' ').trim().slice(0, 300);
+
+    const normalizeAutoTranslationEntityGlossary = (value) => {
+        let parsed = value;
+        if (typeof parsed === 'string') {
+            try { parsed = JSON.parse(parsed); } catch { parsed = []; }
+        }
+        if (!Array.isArray(parsed)) return [];
+
+        const entries = [];
+        const seen = new Set();
+        for (const item of parsed) {
+            if (!item || typeof item !== 'object') continue;
+            const source = normalizePromptContextText(item.source);
+            const target = normalizePromptContextText(item.target);
+            const work = normalizePromptContextText(item.work);
+            if (!source || !target) continue;
+            const key = `${work.toLocaleLowerCase()}\u0000${source.toLocaleLowerCase()}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            entries.push({
+                source: source.slice(0, TRANSLATION_ENTITY_GLOSSARY_MAX_FIELD_LENGTH),
+                target: target.slice(0, TRANSLATION_ENTITY_GLOSSARY_MAX_FIELD_LENGTH),
+                work: work.slice(0, TRANSLATION_ENTITY_GLOSSARY_MAX_FIELD_LENGTH),
+                type: normalizePromptContextText(item.type).slice(0, 48),
+                confidence: ['high', 'medium'].includes(String(item.confidence || '').toLowerCase())
+                    ? String(item.confidence).toLowerCase()
+                    : 'medium',
+                provider: normalizePromptContextText(item.provider).slice(0, 64),
+                trackId: normalizePromptContextText(item.trackId).slice(0, 96),
+                updatedAt: Number.isFinite(Number(item.updatedAt)) ? Number(item.updatedAt) : Date.now()
+            });
+            if (entries.length >= TRANSLATION_AUTO_ENTITY_GLOSSARY_MAX_ENTRIES) break;
+        }
+        return entries;
+    };
+
+    const parseTranslationEntityCollectionSeen = (value) => {
+        let parsed = value;
+        if (typeof parsed === 'string') {
+            try { parsed = JSON.parse(parsed); } catch { parsed = []; }
+        }
+        if (!Array.isArray(parsed)) return [];
+        return Array.from(new Set(parsed.filter(item => typeof item === 'string' && item)))
+            .slice(-TRANSLATION_ENTITY_COLLECTION_MAX_SEEN);
+    };
 
     const normalizeProviderRetryCount = (value) => {
         if (value === null || value === undefined || value === '') {
@@ -1734,6 +1783,7 @@ ${JSON.stringify(payload)}`;
             this._events = new Map();
             this._onceEvents = new Map();
             this._marketplaceAddons = new Set(); // 마켓플레이스에서 설치된 에드온 추적
+            this._translationEntityCollectionInflight = new Map();
         }
 
         // ============================================
