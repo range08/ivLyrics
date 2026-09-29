@@ -3796,6 +3796,12 @@ const Prefetcher = {
     const text = getNonSectionLyricsText(lyricsArray);
     const legacyText = getLegacyNonSectionLyricsText(lyricsArray);
     const userLang = getCurrentTranslationTargetLanguage();
+    const translationContext = {
+      title: trackInfo.title || "",
+      artist: trackInfo.artist || "",
+      album: trackInfo.album || trackInfo.albumName || "",
+      sourceLang: detectedLanguage || "auto",
+    };
 
     if (!text.trim()) return;
 
@@ -3822,6 +3828,7 @@ const Prefetcher = {
             isPhonetic,
             provider: lyrics.provider,
             text: cacheText,
+            ...translationContext,
           });
           const outText = getTranslationOutputFromCache(cached, isPhonetic);
           return processTranslationResult(outText, isPhonetic ? "phonetic" : "translation", splitVocalParts);
@@ -3841,6 +3848,7 @@ const Prefetcher = {
                 trackId,
                 artist: trackInfo.artist,
                 title: trackInfo.title,
+                album: trackInfo.album || trackInfo.albumName || "",
                 text,
                 wantSmartPhonetic: true,
                 sourceLang: detectedLanguage || "auto",
@@ -3878,8 +3886,10 @@ const Prefetcher = {
                 trackId,
                 artist: trackInfo.artist,
                 title: trackInfo.title,
+                album: trackInfo.album || trackInfo.albumName || "",
                 text,
                 wantSmartPhonetic: false,
+                sourceLang: detectedLanguage || "auto",
                 provider: lyrics.provider,
                 ignoreCache: false,
               });
