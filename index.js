@@ -3344,7 +3344,14 @@ const getDisplayModeCacheKey = (lyricsState = {}, mode = "") => {
   const pronunciationNotation = mode === "gemini_romaji"
     ? `:${getCurrentLyricsPronunciationNotation()}`
     : "";
-  return `${lyricsState.uri}:${providerKey}:${mode}${pronunciationNotation}:${getSyncDataRendererCacheVersion(lyricsState)}:${providerCacheVersion}:${lyricsShape}`;
+  const translationSemantics = mode === "gemini_ko"
+    ? `:${getTranslationResultCacheHash(getNonSectionLyricsText(sourceLyrics), false, {
+      title: lyricsState.title || "",
+      artist: lyricsState.artist || "",
+      album: lyricsState.album || lyricsState.albumName || "",
+    })}`
+    : "";
+  return `${lyricsState.uri}:${providerKey}:${mode}${pronunciationNotation}${translationSemantics}:${getSyncDataRendererCacheVersion(lyricsState)}:${providerCacheVersion}:${lyricsShape}`;
 };
 
 // Enhanced cache system with memory-efficient LRU and automatic cleanup
