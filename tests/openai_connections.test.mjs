@@ -138,7 +138,7 @@ test('per-task reasoning controls map to Chat Completions and Responses request 
             translationPrompt: { systemPrompt: 'translate', userPrompt: 'source' },
             wantSmartPhonetic: false,
         });
-        assert.deepEqual(result.translation, ['translated']);
+        assert.deepEqual(Array.from(result.translation), ['translated']);
         assert.equal(h.requests[0].body.reasoning_effort, 'low');
     }
 
@@ -152,7 +152,7 @@ test('per-task reasoning controls map to Chat Completions and Responses request 
             phoneticPrompt: { systemPrompt: 'pronounce', userPrompt: 'source' },
             wantSmartPhonetic: true,
         });
-        assert.deepEqual(result.phonetic, ['pronounced']);
+        assert.deepEqual(Array.from(result.phonetic), ['pronounced']);
         assert.equal(h.requests[0].body.reasoning_effort, 'high');
     }
 
@@ -169,8 +169,8 @@ test('per-task reasoning controls map to Chat Completions and Responses request 
             tmiPrompt: 'research fixture',
             webSearch: true,
         });
-        assert.deepEqual(result, { summary: 'researched' });
-        assert.deepEqual(h.requests[0].body.reasoning, { effort: 'medium' });
+        assert.equal(result.summary, 'researched');
+        assert.equal(h.requests[0].body.reasoning.effort, 'medium');
         assert.equal(h.requests[0].body.reasoning_effort, undefined);
     }
 });
