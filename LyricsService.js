@@ -8643,13 +8643,16 @@
         const sourceTextHash = getLyricsTextCacheHash(text);
         const context = resolveTranslationTrackContext({ title, artist, album });
         const resolvedSourceLang = resolveTranslationSourceLanguage(text, sourceLang);
+        const webContextEnabled = window.ivLyricsWebContext?.isEnabled?.() !== false;
         const resolvedWebContextHash = String(
-            webContextHash ||
-            window.ivLyricsWebContext?.peekHash?.({
-                trackId,
-                ...context
-            }) ||
-            'none'
+            webContextEnabled
+                ? (webContextHash ||
+                    window.ivLyricsWebContext?.peekHash?.({
+                        trackId,
+                        ...context
+                    }) ||
+                    'none')
+                : 'disabled'
         );
         const sharedContextHash = getLyricsTextCacheHash(JSON.stringify({
             ...context,
