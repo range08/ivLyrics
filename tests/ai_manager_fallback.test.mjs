@@ -274,3 +274,88 @@ test("translation prompt uses song context and authoritative proper-noun glossar
 	assert.match(prompt.userPrompt, /"source":"アビドス","target":"아비도스","work":""/);
 	assert.equal(prompt.lineCount, 2);
 });
+
+
+test("background glossary collection persists reusable hints and deduplicates tracks", async () => {
+	const storage = new Map();
+	const window = {};
+	vm.runInNewContext(source, {
+		window,
+		Spicetify: {
+			LocalStorage: {
+				get: key => storage.has(key) ? storage.get(key) : null,
+				set: (key, value) => storage.set(key, value),
+			},
+		},
+		console,
+		setTimeout,
+		clearTimeout,
+		requestIdleCallback: callback => { callback(); return 1; },
+	});
+
+	const manager = window.AIAddonManager;
+	await manager._initPromise;
+	let calls = 0;
+	const addon = {
+		id: "fixture.glossary",
+		name: "Fixture Glossary",
+		author: "fixture",
+		version: "1.0",
+		description: "fixture",
+		supports: { translate: true },
+		getSettingsUI() {},
+		async collectTranslationEntities(params) {
+			calls++;
+			assert.equal(params.trackId, "track-background-1");
+			return {
+				entities: [
+					{ source: "シャーレ", target: "샬레", work: "Blue Archive", type: "organization", confidence: "high" },
+				],
+			};
+		},
+	};
+	assert.equal(manager.register(addon), true);
+	manager.setProviderEnabled(addon.id, true);
+	manager.setProviderOrder([addon.id]);
+
+	await manager.scheduleTranslationEntityCollection({
+		trackId: "track-background-1",
+		title: "Fixture",
+		artist: "Fixture",
+		album: "Blue Archive",
+		text: "シャーレへ行こう",
+		lang: "ko",
+		sourceLang: "ja",
+	});
+	assert.equal(calls, 1);
+	assert.deepEqual(normalize(manager.getAutoTranslationEntityGlossary()).map(entry => ({
+		source: entry.source,
+		target: entry.target,
+		work: entry.work,
+		confidence: entry.confidence,
+	})), [{
+		source: "シャーレ",
+		target: "샬레",
+		work: "Blue Archive",
+		confidence: "high",
+	}]);
+
+	await manager.scheduleTranslationEntityCollection({
+		trackId: "track-background-1",
+		text: "シャーレへ行こう",
+		lang: "ko",
+		sourceLang: "ja",
+	});
+	assert.equal(calls, 1, "the same track/language/provider must not be collected twice");
+
+	const prompt = manager.buildLyricsTranslationPrompt({
+		text: "シャーレへ行こう",
+		lang: "ko",
+		title: "Fixture",
+		album: "Blue Archive",
+		sourceLang: "ja",
+	});
+	assert.match(prompt.userPrompt, /<auto_entity_glossary>/);
+	assert.match(prompt.userPrompt, /"source":"シャーレ","target":"샬레"/);
+	assert.match(prompt.systemPrompt, /hints, not authoritative facts/);
+});
