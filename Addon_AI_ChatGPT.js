@@ -723,6 +723,8 @@
                 let emittedLineCount = 0;
                 let emittedProvisionalOutput = false;
                 let receivedStreamText = false;
+                let usageReservationId = null;
+                let responsesUsage = null;
                 const resetProvisionalOutput = (reason, error = null) => {
                     if (!emittedProvisionalOutput && !receivedStreamText) return;
                     try {
@@ -741,16 +743,23 @@
 
                 try {
                     const endpoint = `${normalizeBaseUrl(baseUrl)}/responses`;
+                    const builtBody = buildResponsesRequestBody(model, prompt, { reasoningProfile });
+                    const guardedRequest = beginTrackedOpenAIRequest(baseUrl, model, builtBody, 'responses');
+                    usageReservationId = guardedRequest.reservationId;
                     const response = await window.ivLyricsFetch(endpoint, {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json',
                             'Authorization': `Bearer ${apiKey}`
                         },
-                        body: JSON.stringify(buildResponsesRequestBody(model, prompt, { reasoningProfile }))
+                        body: JSON.stringify(guardedRequest.body)
                     }, requestTimeoutMs);
 
-                    if (response.status === 429 || response.status === 403) break;
+                    if (response.status === 429 || response.status === 403) {
+                        cancelTrackedOpenAIRequest(baseUrl, usageReservationId);
+                        usageReservationId = null;
+                        break;
+                    }
                     if (!response.ok) {
                         let errorData = null;
                         try { errorData = await response.json(); } catch { }
@@ -760,6 +769,8 @@
                     const contentType = String(response.headers?.get?.('content-type') || '').toLowerCase();
                     if (!response.body || !contentType.includes('text/event-stream')) {
                         const data = await response.json();
+                        completeTrackedOpenAIRequest(baseUrl, model, usageReservationId, data?.usage);
+                        usageReservationId = null;
                         const rawText = readResponsesOutputText(data);
                         if (!rawText.trim()) throw new Error('[ChatGPT Web Search] Empty response from API');
                         if (typeof onRawChunk === 'function') {
@@ -812,6 +823,7 @@
                         }
                         if (event.type === 'response.completed') {
                             completed = true;
+                            responsesUsage = event.response?.usage || responsesUsage;
                             if (!accumulated) appendText(readResponsesOutputText(event.response));
                         }
                     };
@@ -848,6 +860,8 @@
 
                     if (!completed) throw new Error('[ChatGPT Web Search] Responses API stream ended before completion');
                     if (!accumulated.trim()) throw new Error('[ChatGPT Web Search] Empty response from streaming API');
+                    completeTrackedOpenAIRequest(baseUrl, model, usageReservationId, responsesUsage);
+                    usageReservationId = null;
 
                     const transformed = typeof transformResult === 'function'
                         ? transformResult(accumulated)
@@ -857,6 +871,8 @@
                     }
                     return transformed;
                 } catch (error) {
+                    cancelTrackedOpenAIRequest(baseUrl, usageReservationId);
+                    usageReservationId = null;
                     lastError = error;
                     window.__ivLyricsDebugLog?.(`[ChatGPT Addon] Responses API attempt ${attempt + 1} failed:`, error.message);
                     resetProvisionalOutput(attempt < maxRetries - 1 ? 'retry' : 'failed', error);
