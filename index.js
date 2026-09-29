@@ -486,7 +486,17 @@ const getTranslationSourceCacheHash = (text) => {
   return `src-${(hash >>> 0).toString(36)}-${value.length.toString(36)}`;
 };
 
-const getTranslationResultCacheHash = (text, isPhonetic = false) => {
+const getTranslationResultCacheHash = (text, isPhonetic = false, context = {}) => {
+  const sharedHasher = window.ivLyricsTranslationCache?.getSourceHash;
+  if (typeof sharedHasher === "function") {
+    return sharedHasher({
+      text,
+      isPhonetic,
+      pronunciationNotation: getCurrentLyricsPronunciationNotation(),
+      ...context,
+    });
+  }
+
   const sourceHash = getTranslationSourceCacheHash(text);
   if (isPhonetic) {
     return `${sourceHash}:phonetic-prompt=${LYRICS_PHONETIC_PROMPT_CACHE_VERSION}:notation=${getCurrentLyricsPronunciationNotation()}`;
@@ -521,6 +531,10 @@ const getCachedTranslationForText = async ({
   isPhonetic = false,
   provider = null,
   text,
+  title = "",
+  artist = "",
+  album = "",
+  sourceLang = null,
 }) => {
   const cacheApi = window.LyricsCache || (typeof LyricsCache !== "undefined" ? LyricsCache : null);
   if (!cacheApi?.getTranslation || !trackId || !lang || !String(text || "").trim()) {
@@ -528,7 +542,12 @@ const getCachedTranslationForText = async ({
   }
 
   try {
-    const sourceHash = getTranslationResultCacheHash(text, isPhonetic);
+    const sourceHash = getTranslationResultCacheHash(text, isPhonetic, {
+      title,
+      artist,
+      album,
+      sourceLang,
+    });
     const cached = await cacheApi.getTranslation(trackId, lang, isPhonetic, provider, sourceHash);
     if (!cached) return null;
 
@@ -578,6 +597,10 @@ const setCachedTranslationForText = async ({
   provider = null,
   text,
   outText,
+  title = "",
+  artist = "",
+  album = "",
+  sourceLang = null,
 }) => {
   const cacheApi = window.LyricsCache || (typeof LyricsCache !== "undefined" ? LyricsCache : null);
   if (
@@ -591,7 +614,12 @@ const setCachedTranslationForText = async ({
   }
 
   try {
-    const sourceHash = getTranslationResultCacheHash(text, isPhonetic);
+    const sourceHash = getTranslationResultCacheHash(text, isPhonetic, {
+      title,
+      artist,
+      album,
+      sourceLang,
+    });
     return await cacheApi.setTranslation(
       trackId,
       lang,
@@ -3316,7 +3344,14 @@ const getDisplayModeCacheKey = (lyricsState = {}, mode = "") => {
   const pronunciationNotation = mode === "gemini_romaji"
     ? `:${getCurrentLyricsPronunciationNotation()}`
     : "";
-  return `${lyricsState.uri}:${providerKey}:${mode}${pronunciationNotation}:${getSyncDataRendererCacheVersion(lyricsState)}:${providerCacheVersion}:${lyricsShape}`;
+  const translationSemantics = mode === "gemini_ko"
+    ? `:${getTranslationResultCacheHash(getNonSectionLyricsText(sourceLyrics), false, {
+      title: lyricsState.title || "",
+      artist: lyricsState.artist || "",
+      album: lyricsState.album || lyricsState.albumName || "",
+    })}`
+    : "";
+  return `${lyricsState.uri}:${providerKey}:${mode}${pronunciationNotation}${translationSemantics}:${getSyncDataRendererCacheVersion(lyricsState)}:${providerCacheVersion}:${lyricsShape}`;
 };
 
 // Enhanced cache system with memory-efficient LRU and automatic cleanup
@@ -3768,6 +3803,12 @@ const Prefetcher = {
     const text = getNonSectionLyricsText(lyricsArray);
     const legacyText = getLegacyNonSectionLyricsText(lyricsArray);
     const userLang = getCurrentTranslationTargetLanguage();
+    const translationContext = {
+      title: trackInfo.title || "",
+      artist: trackInfo.artist || "",
+      album: trackInfo.album || trackInfo.albumName || "",
+      sourceLang: detectedLanguage || "auto",
+    };
 
     if (!text.trim()) return;
 
@@ -3794,6 +3835,7 @@ const Prefetcher = {
             isPhonetic,
             provider: lyrics.provider,
             text: cacheText,
+            ...translationContext,
           });
           const outText = getTranslationOutputFromCache(cached, isPhonetic);
           return processTranslationResult(outText, isPhonetic ? "phonetic" : "translation", splitVocalParts);
@@ -3813,6 +3855,7 @@ const Prefetcher = {
                 trackId,
                 artist: trackInfo.artist,
                 title: trackInfo.title,
+                album: trackInfo.album || trackInfo.albumName || "",
                 text,
                 wantSmartPhonetic: true,
                 sourceLang: detectedLanguage || "auto",
@@ -3850,8 +3893,10 @@ const Prefetcher = {
                 trackId,
                 artist: trackInfo.artist,
                 title: trackInfo.title,
+                album: trackInfo.album || trackInfo.albumName || "",
                 text,
                 wantSmartPhonetic: false,
+                sourceLang: detectedLanguage || "auto",
                 provider: lyrics.provider,
                 ignoreCache: false,
               });
@@ -6353,6 +6398,15 @@ class LyricsContainer extends react.Component {
 
       const currentUri = lyricsState.uri;
       const currentProvider = lyricsState.provider || "";
+      const translationSourceLang =
+        this.trackLanguageOverride || this.provideLanguageCode(originalLyrics) || "auto";
+      const translationSpotifyData = SpotifyDataHelper.extractSpotifyData(currentUri);
+      const translationContext = {
+        title: this.state.title || lyricsState.title || translationSpotifyData?.name || "",
+        artist: this.state.artist || lyricsState.artist || translationSpotifyData?.artists?.join(", ") || "",
+        album: translationSpotifyData?.album || Spicetify.Player?.data?.item?.metadata?.album_title || "",
+        sourceLang: translationSourceLang,
+      };
 
       if (!this._dmResults) {
         this._dmResults = {};
@@ -6512,12 +6566,12 @@ class LyricsContainer extends react.Component {
       if (needPhonetic) {
         phoneticResponse = await window.Translator.callGemini({
           trackId,
-          artist: this.state.artist || lyricsState.artist,
-          title: this.state.title || lyricsState.title,
+          artist: translationContext.artist,
+          title: translationContext.title,
+          album: translationContext.album,
           text,
           wantSmartPhonetic: true,
-          sourceLang:
-            this.trackLanguageOverride || this.provideLanguageCode(originalLyrics) || "auto",
+          sourceLang: translationContext.sourceLang,
           provider: lyricsState.provider,
           ignoreCache: true,
           onLine: handlePhoneticStreamLine,
@@ -6532,10 +6586,12 @@ class LyricsContainer extends react.Component {
         }
         translationResponse = await window.Translator.callGemini({
           trackId,
-          artist: this.state.artist || lyricsState.artist,
-          title: this.state.title || lyricsState.title,
+          artist: translationContext.artist,
+          title: translationContext.title,
+          album: translationContext.album,
           text,
           wantSmartPhonetic: false,
+          sourceLang: translationContext.sourceLang,
           provider: lyricsState.provider,
           ignoreCache: true,
           onLine: handleTranslationStreamLine,
@@ -6577,6 +6633,7 @@ class LyricsContainer extends react.Component {
             provider: lyricsState.provider,
             text,
             outText: phoneticOutput,
+            ...translationContext,
           })
           : null,
         needTranslation && translationOutput
@@ -6587,6 +6644,7 @@ class LyricsContainer extends react.Component {
             provider: lyricsState.provider,
             text,
             outText: translationOutput,
+            ...translationContext,
           })
           : null,
       ].filter(Boolean));
@@ -8108,8 +8166,18 @@ class LyricsContainer extends react.Component {
       // Filter out section headers before sending to Gemini for translation
       const text = getNonSectionLyricsText(lyrics);
       const legacyText = getLegacyNonSectionLyricsText(lyrics);
-      const trackId = Utils.extractTrackId(lyricsState.uri || this.state.uri);
+      const trackUri = lyricsState.uri || this.state.uri;
+      const trackId = Utils.extractTrackId(trackUri);
       const userLang = this.getTranslationTargetLanguage();
+      const translationSourceLang =
+        this.trackLanguageOverride || this.provideLanguageCode(lyrics) || "auto";
+      const translationSpotifyData = SpotifyDataHelper.extractSpotifyData(trackUri);
+      const translationContext = {
+        title: this.state.title || lyricsState.title || translationSpotifyData?.name || "",
+        artist: this.state.artist || lyricsState.artist || translationSpotifyData?.artists?.join(", ") || "",
+        album: translationSpotifyData?.album || Spicetify.Player?.data?.item?.metadata?.album_title || "",
+        sourceLang: translationSourceLang,
+      };
 
       const mapResultLinesToLyrics = (linesInput, splitVocalParts = true) => {
         return mapTranslationLinesToLyrics(lyrics, linesInput, {
@@ -8153,6 +8221,7 @@ class LyricsContainer extends react.Component {
             isPhonetic: wantSmartPhonetic,
             provider: lyricsState.provider,
             text: cacheText,
+            ...translationContext,
           });
           return getTranslationOutputFromCache(cachedResult, wantSmartPhonetic);
         };
@@ -8177,12 +8246,12 @@ class LyricsContainer extends react.Component {
 
           const response = await window.Translator.callGemini({
             apiKey,
-            artist: this.state.artist || lyricsState.artist,
-            title: this.state.title || lyricsState.title,
+            artist: translationContext.artist,
+            title: translationContext.title,
+            album: translationContext.album,
             text,
             wantSmartPhonetic,
-            sourceLang:
-              this.trackLanguageOverride || this.provideLanguageCode(lyrics) || "auto",
+            sourceLang: translationContext.sourceLang,
             provider: lyricsState.provider,
             onLine: handleStreamLine,
             onStreamReset: handleStreamReset,

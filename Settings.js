@@ -1903,6 +1903,9 @@ const AIProvidersTab = () => {
   const [translationStyle, setTranslationStyle] = useState(
     () => window.AIAddonManager?.getTranslationStyle?.() || "natural"
   );
+  const [translationEntityGlossary, setTranslationEntityGlossary] = useState(
+    () => window.AIAddonManager?.getTranslationEntityGlossaryRaw?.() || ""
+  );
   const [providerRetryCount, setProviderRetryCount] = useState(
     () => window.AIAddonManager?.getProviderRetryCount?.() ?? 2
   );
@@ -1916,6 +1919,7 @@ const AIProvidersTab = () => {
   useEffect(() => {
     let retryTimer = null;
     let unsubscribeStyle = null;
+    let unsubscribeEntityGlossary = null;
     let unsubscribeRetryCount = null;
     let disposed = false;
 
@@ -1935,10 +1939,14 @@ const AIProvidersTab = () => {
         });
         setEnabledProviders(enabled);
         setTranslationStyle(window.AIAddonManager.getTranslationStyle?.() || "natural");
+        setTranslationEntityGlossary(window.AIAddonManager.getTranslationEntityGlossaryRaw?.() || "");
         setProviderRetryCount(window.AIAddonManager.getProviderRetryCount?.() ?? 2);
 
         unsubscribeStyle = window.AIAddonManager.on?.("translation:style:changed", ({ style }) => {
           if (!disposed) setTranslationStyle(style || "natural");
+        });
+        unsubscribeEntityGlossary = window.AIAddonManager.on?.("translation:entity-glossary:changed", ({ raw }) => {
+          if (!disposed) setTranslationEntityGlossary(raw || "");
         });
         unsubscribeRetryCount = window.AIAddonManager.on?.("provider:retry-count:changed", ({ retryCount }) => {
           if (!disposed) setProviderRetryCount(Number(retryCount) || 0);
@@ -1953,6 +1961,7 @@ const AIProvidersTab = () => {
       disposed = true;
       if (retryTimer) clearTimeout(retryTimer);
       if (typeof unsubscribeStyle === "function") unsubscribeStyle();
+      if (typeof unsubscribeEntityGlossary === "function") unsubscribeEntityGlossary();
       if (typeof unsubscribeRetryCount === "function") unsubscribeRetryCount();
     };
   }, [refreshKey]);
@@ -1960,6 +1969,11 @@ const AIProvidersTab = () => {
   const handleTranslationStyleChange = (style) => {
     const nextStyle = window.AIAddonManager?.setTranslationStyle?.(style) || style;
     setTranslationStyle(nextStyle);
+  };
+
+  const handleTranslationEntityGlossaryChange = (value) => {
+    const nextValue = window.AIAddonManager?.setTranslationEntityGlossary?.(value) ?? value;
+    setTranslationEntityGlossary(nextValue);
   };
 
   const handleTranslationStyleKeyDown = (event, index) => {
@@ -2073,6 +2087,48 @@ const AIProvidersTab = () => {
           })
         )
       ),
+      (() => {
+        const uiLanguage = String(window.I18n?.getCurrentLanguage?.() || "en").toLowerCase();
+        const korean = uiLanguage.startsWith("ko");
+        return react.createElement("section", {
+          className: "ai-translation-style-panel",
+          "data-setting-key": "ai-translation-entity-glossary"
+        },
+          react.createElement("div", { className: "ai-translation-style-header" },
+            react.createElement("div", { className: "ai-translation-style-title" },
+              korean ? "고유명사 번역 사전" : "Proper noun translation glossary"
+            ),
+            react.createElement("p", { className: "ai-translation-style-description" },
+              korean
+                ? "애니·게임의 캐릭터, 조직, 지역, 아이템 등 공식 표기를 고정합니다. 작품별 항목은 [작품명] 원문 => 번역 형식을 사용하세요."
+                : "Pin official translations for anime/game characters, organizations, locations, items, and other franchise terms. Scope an entry with [Work] source => target."
+            )
+          ),
+          react.createElement("textarea", {
+            value: translationEntityGlossary,
+            rows: 6,
+            spellCheck: false,
+            className: "ai-translation-entity-glossary-input",
+            style: {
+              width: "100%",
+              resize: "vertical",
+              minHeight: "112px",
+              boxSizing: "border-box",
+              fontFamily: "ui-monospace, SFMono-Regular, Consolas, monospace",
+              fontSize: "12px"
+            },
+            placeholder: korean
+              ? "# 한 줄에 하나\n[블루 아카이브] シャーレ => 샬레\nアビドス => 아비도스"
+              : "# One mapping per line\n[Blue Archive] シャーレ => Schale\nアビドス => Abydos",
+            onChange: (event) => handleTranslationEntityGlossaryChange(event.target.value)
+          }),
+          react.createElement("small", { style: { opacity: 0.65, lineHeight: 1.5 } },
+            korean
+              ? "사전 항목이 최우선입니다. 사전에 없는 고유명사는 곡 제목·아티스트·앨범·전체 가사 문맥으로 판별하며, 공식 표기를 확신할 수 없으면 의미 번역보다 자연스러운 음역을 우선합니다."
+              : "Glossary mappings are authoritative. Unknown names are resolved from title, artist, album, source language, and full-lyrics context; uncertain names are transliterated rather than literally translated."
+          )
+        );
+      })(),
       react.createElement(OptionList, {
         items: [
           {
