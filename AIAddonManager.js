@@ -1946,6 +1946,7 @@ ${JSON.stringify(payload)}`;
                     existingGlossary: this.getTranslationEntityGlossary(),
                     autoGlossary: this.getAutoTranslationEntityGlossary()
                 });
+                if (result?.skipped) return result;
                 const entries = Array.isArray(result?.entities) ? result.entities : [];
                 if (entries.length > 0) {
                     this.addAutoTranslationEntityGlossary(entries, {
