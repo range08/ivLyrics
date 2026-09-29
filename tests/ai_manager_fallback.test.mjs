@@ -219,3 +219,58 @@ test("research web search capability toggle controls the provider webSearch flag
 	assert.deepEqual(calls, [true]);
 	assert.equal(enabled._research.web_search, "used");
 });
+
+
+test("translation prompt uses song context and authoritative proper-noun glossary entries", async () => {
+	const storage = new Map();
+	const window = {};
+	vm.runInNewContext(source, {
+		window,
+		Spicetify: {
+			LocalStorage: {
+				get: key => storage.get(key),
+				set: (key, value) => storage.set(key, value),
+			},
+		},
+		console,
+		setTimeout,
+		clearTimeout,
+	});
+
+	const manager = window.AIAddonManager;
+	await manager._initPromise;
+	const glossary = [
+		"# franchise terms",
+		"[Blue Archive] シャーレ => 샬레",
+		"アビドス → 아비도스",
+		"[Blue Archive] シャーレ => duplicate-must-not-win",
+		"",
+	].join("\n");
+	manager.setTranslationEntityGlossary(glossary);
+
+	assert.equal(manager.getTranslationEntityGlossaryRaw(), glossary);
+	assert.deepEqual(normalize(manager.getTranslationEntityGlossary()), [
+		{ source: "シャーレ", target: "샬레", work: "Blue Archive" },
+		{ source: "アビドス", target: "아비도스", work: "" },
+	]);
+
+	const prompt = manager.buildLyricsTranslationPrompt({
+		text: "シャーレへ行こう\nアビドスの空",
+		lang: "ko",
+		translationStyle: "natural",
+		title: "Constant Moderato",
+		artist: "Mitsukiyo",
+		album: "Blue Archive Original Soundtrack",
+		sourceLang: "ja",
+	});
+
+	assert.match(prompt.systemPrompt, /PROPER NOUN POLICY/);
+	assert.match(prompt.systemPrompt, /Never invent or guess an "official" localization/);
+	assert.match(prompt.systemPrompt, /transliterate the proper noun naturally/);
+	assert.match(prompt.userPrompt, /"title":"Constant Moderato"/);
+	assert.match(prompt.userPrompt, /"album":"Blue Archive Original Soundtrack"/);
+	assert.match(prompt.userPrompt, /"source_language":"ja"/);
+	assert.match(prompt.userPrompt, /"source":"シャーレ","target":"샬레","work":"Blue Archive"/);
+	assert.match(prompt.userPrompt, /"source":"アビドス","target":"아비도스","work":""/);
+	assert.equal(prompt.lineCount, 2);
+});
