@@ -192,6 +192,40 @@
         window.AIAddonManager?.setAddonSetting(ADDON_INFO.id, key, value);
     }
 
+    const REASONING_PROFILES = Object.freeze({
+        translation: 'adv-reasoning-translation',
+        pronunciation: 'adv-reasoning-pronunciation',
+        research: 'adv-reasoning-research'
+    });
+    const REASONING_LEVELS = new Set(['none', 'low', 'medium', 'high']);
+
+    function normalizeReasoningLevel(value) {
+        const normalized = String(value || 'none').trim().toLowerCase();
+        return REASONING_LEVELS.has(normalized) ? normalized : 'none';
+    }
+
+    function getReasoningLevel(profile) {
+        const key = REASONING_PROFILES[profile];
+        return key ? normalizeReasoningLevel(getSetting(key, 'none')) : 'none';
+    }
+
+    function isReasoningCapableModel(model) {
+        const id = String(model || '').trim().toLowerCase();
+        return /^(?:gpt-(?:5|6)(?:[.-]|$)|gpt-daybreak-|o(?:1|3|4)(?:[.-]|$))/.test(id);
+    }
+
+    function getReasoningRequestPatch(model, profile, apiMode) {
+        const effort = getReasoningLevel(profile);
+        // "None" deliberately preserves the provider/model default and keeps
+        // legacy OpenAI-compatible endpoints working without an unsupported
+        // reasoning parameter. Advanced Body Merge JSON can still explicitly
+        // send reasoning_effort: "none" or reasoning: { effort: "none" }.
+        if (effort === 'none' || !isReasoningCapableModel(model)) return {};
+        return apiMode === 'responses'
+            ? { reasoning: { effort } }
+            : { reasoning_effort: effort };
+    }
+
     function t(key, fallback) {
         const value = window.I18n?.t?.(key);
         return value && value !== key ? value : fallback;
@@ -336,16 +370,19 @@
         return { systemPrompt: '', userPrompt: String(prompt ?? '') };
     }
 
-    function buildChatGPTRequestBody(model, prompt, { stream = false } = {}) {
+    function buildChatGPTRequestBody(model, prompt, { stream = false, reasoningProfile = null } = {}) {
         const { systemPrompt, userPrompt } = normalizePromptRequest(prompt);
         const requestBody = {
             model: model,
             messages: [
                 ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
                 { role: 'user', content: userPrompt }
-            ]
+            ],
+            ...getReasoningRequestPatch(model, reasoningProfile, 'chat')
         };
 
+        // Advanced Body Merge JSON is applied last so explicit user values win
+        // over the per-task reasoning controls as well as the normal defaults.
         const mergedBody = mergeRequestBody(requestBody, getRequestBodyMergePatch());
 
         // Streaming callers rely on receiving an early response byte so long
@@ -357,7 +394,7 @@
         return mergedBody;
     }
 
-    function buildResponsesRequestBody(model, prompt) {
+    function buildResponsesRequestBody(model, prompt, { reasoningProfile = null } = {}) {
         const { systemPrompt, userPrompt } = normalizePromptRequest(prompt);
         const patch = { ...getRequestBodyMergePatch() };
 
@@ -377,6 +414,7 @@
             model,
             ...(systemPrompt ? { instructions: systemPrompt } : {}),
             input: userPrompt,
+            ...getReasoningRequestPatch(model, reasoningProfile, 'responses'),
             tools: [{ type: 'web_search' }],
             // Research explicitly starts with a live search attempt. If the
             // selected model cannot call the tool, the manager retries without it.
@@ -482,9 +520,10 @@
         maxRetries = window.AIAddonManager?.getProviderRequestAttempts?.() ?? 3,
         transformResult = null,
         requestTimeoutMs = window.ivLyricsFetch?.DEFAULT_TIMEOUT_MS || 90_000,
-        connection = null
+        connection = null,
+        reasoningProfile = null
     ) {
-        if (!connection) return withProviderConnections(provider => callChatGPTAPIRaw(prompt, maxRetries, transformResult, requestTimeoutMs, provider));
+        if (!connection) return withProviderConnections(provider => callChatGPTAPIRaw(prompt, maxRetries, transformResult, requestTimeoutMs, provider, reasoningProfile));
         const apiKeys = getApiKeys(connection);
         if (apiKeys.length === 0) {
             throw new Error('[ChatGPT] API key is required. Please configure your API key in settings.');
@@ -510,7 +549,7 @@
                             'Content-Type': 'application/json',
                             'Authorization': `Bearer ${apiKey}`
                         },
-                        body: JSON.stringify(buildChatGPTRequestBody(model, prompt))
+                        body: JSON.stringify(buildChatGPTRequestBody(model, prompt, { reasoningProfile }))
                     }, requestTimeoutMs);
 
                     if (response.status === 429 || response.status === 403) {
@@ -626,9 +665,10 @@
         transformResult = null,
         requestTimeoutMs = window.ivLyricsFetch?.DEFAULT_TIMEOUT_MS || 90_000,
         onRawChunk = null,
-        connection = null
+        connection = null,
+        reasoningProfile = null
     ) {
-        if (!connection) return withProviderConnections(provider => callResponsesAPIStream(prompt, onLine, onStreamReset, maxRetries, transformResult, requestTimeoutMs, onRawChunk, provider));
+        if (!connection) return withProviderConnections(provider => callResponsesAPIStream(prompt, onLine, onStreamReset, maxRetries, transformResult, requestTimeoutMs, onRawChunk, provider, reasoningProfile));
         const apiKeys = getApiKeys(connection);
         if (apiKeys.length === 0) {
             throw new Error('[ChatGPT] API key is required. Please configure your API key in settings.');
@@ -672,7 +712,7 @@
                             'Content-Type': 'application/json',
                             'Authorization': `Bearer ${apiKey}`
                         },
-                        body: JSON.stringify(buildResponsesRequestBody(model, prompt))
+                        body: JSON.stringify(buildResponsesRequestBody(model, prompt, { reasoningProfile }))
                     }, requestTimeoutMs);
 
                     if (response.status === 429 || response.status === 403) break;
@@ -802,9 +842,10 @@
         transformResult = null,
         requestTimeoutMs = window.ivLyricsFetch?.DEFAULT_TIMEOUT_MS || 90_000,
         onRawChunk = null,
-        connection = null
+        connection = null,
+        reasoningProfile = null
     ) {
-        if (!connection) return withProviderConnections(provider => callChatGPTAPIStream(prompt, onLine, onStreamReset, maxRetries, transformResult, requestTimeoutMs, onRawChunk, provider));
+        if (!connection) return withProviderConnections(provider => callChatGPTAPIStream(prompt, onLine, onStreamReset, maxRetries, transformResult, requestTimeoutMs, onRawChunk, provider, reasoningProfile));
         const apiKeys = getApiKeys(connection);
         if (apiKeys.length === 0) {
             throw new Error('[ChatGPT] API key is required. Please configure your API key in settings.');
@@ -853,7 +894,7 @@
                             'Content-Type': 'application/json',
                             'Authorization': `Bearer ${apiKey}`
                         },
-                        body: JSON.stringify(buildChatGPTRequestBody(model, prompt, { stream: true }))
+                        body: JSON.stringify(buildChatGPTRequestBody(model, prompt, { stream: true, reasoningProfile }))
                     }, requestTimeoutMs);
 
                     if (response.status === 429 || response.status === 403) {
@@ -996,9 +1037,10 @@
     async function callChatGPTAPI(
         prompt,
         maxRetries = window.AIAddonManager?.getProviderRequestAttempts?.() ?? 3,
-        requestTimeoutMs = window.ivLyricsFetch?.DEFAULT_TIMEOUT_MS || 90_000
+        requestTimeoutMs = window.ivLyricsFetch?.DEFAULT_TIMEOUT_MS || 90_000,
+        reasoningProfile = null
     ) {
-        return await callChatGPTAPIRaw(prompt, maxRetries, extractJSON, requestTimeoutMs);
+        return await callChatGPTAPIRaw(prompt, maxRetries, extractJSON, requestTimeoutMs, null, reasoningProfile);
     }
 
     /**
@@ -1333,6 +1375,9 @@
                     const savedValue = normalizeRequestBodyMergeJson(getSetting('adv-requestBodyMergeJson', ''));
                     return savedValue || getDefaultRequestBodyMergeJson();
                 });
+                const [translationReasoning, setTranslationReasoning] = useState(() => getReasoningLevel('translation'));
+                const [pronunciationReasoning, setPronunciationReasoning] = useState(() => getReasoningLevel('pronunciation'));
+                const [researchReasoning, setResearchReasoning] = useState(() => getReasoningLevel('research'));
                 const requestBodyMergeError = getRequestBodyMergeValidationError(requestBodyMergeJson);
 
                 useEffect(() => {
@@ -1347,6 +1392,24 @@
                     setSetting('adv-expanded', next);
                 }, [expanded]);
 
+                const reasoningSelect = (label, profile, value, setter) =>
+                    React.createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: '4px' } },
+                        React.createElement('span', { style: { fontSize: '12px' } }, label),
+                        React.createElement('select', {
+                            value,
+                            onChange: (event) => {
+                                const next = normalizeReasoningLevel(event.target.value);
+                                setter(next);
+                                setSetting(REASONING_PROFILES[profile], next);
+                            }
+                        },
+                            React.createElement('option', { value: 'none' }, 'None (provider default)'),
+                            React.createElement('option', { value: 'low' }, 'Low'),
+                            React.createElement('option', { value: 'medium' }, 'Medium'),
+                            React.createElement('option', { value: 'high' }, 'High')
+                        )
+                    );
+
                 return React.createElement('div', { className: 'ai-addon-setting ai-addon-advanced-params' },
                     React.createElement('div', {
                         style: { cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', userSelect: 'none', marginBottom: expanded ? '8px' : '0' },
@@ -1355,7 +1418,15 @@
                         React.createElement('span', { style: { fontSize: '10px', transition: 'transform 0.2s', transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)', display: 'inline-block' } }, '▶'),
                         React.createElement('label', { style: { cursor: 'pointer', margin: 0, fontSize: '12px', opacity: 0.8 } }, 'Advanced API Parameters')
                     ),
-                    expanded && React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px', paddingLeft: '8px', borderLeft: '2px solid rgba(255,255,255,0.1)' } },
+                    expanded && React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '12px', paddingLeft: '8px', borderLeft: '2px solid rgba(255,255,255,0.1)' } },
+                        React.createElement('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '8px' } },
+                            reasoningSelect('Lyrics translation reasoning', 'translation', translationReasoning, setTranslationReasoning),
+                            reasoningSelect('Pronunciation reasoning', 'pronunciation', pronunciationReasoning, setPronunciationReasoning),
+                            reasoningSelect('Research reasoning', 'research', researchReasoning, setResearchReasoning)
+                        ),
+                        React.createElement('small', { style: { opacity: 0.65, fontSize: '11px' } },
+                            'None preserves the provider/model default. Low, Medium, and High are sent only to recognized OpenAI reasoning models. Advanced Body Merge JSON is applied afterward and has final precedence.'
+                        ),
                         React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '4px' } },
                             React.createElement('span', { style: { fontSize: '12px' } }, 'Request Body Merge JSON'),
                             React.createElement('textarea', {
@@ -1390,11 +1461,12 @@
                 throw new Error('[OpenAI ChatGPT] Central lyrics prompt is unavailable.');
             }
             const parseLines = rawResponse => parseTextLines(rawResponse, sourceLines);
+            const reasoningProfile = wantSmartPhonetic ? 'pronunciation' : 'translation';
 
             // Validate inside the provider retry loop so partial/blocked output can retry safely.
             const lines = onLine
-                ? await callChatGPTAPIStream(prompt, onLine, onStreamReset, undefined, parseLines)
-                : await callChatGPTAPIRaw(prompt, undefined, parseLines);
+                ? await callChatGPTAPIStream(prompt, onLine, onStreamReset, undefined, parseLines, undefined, null, null, reasoningProfile)
+                : await callChatGPTAPIRaw(prompt, undefined, parseLines, undefined, null, reasoningProfile);
 
             // Return in the format expected by LyricsService
             if (wantSmartPhonetic) {
@@ -1413,7 +1485,7 @@
             if (!prompt) {
                 throw new Error('[OpenAI ChatGPT] Central character pronunciation prompt is unavailable.');
             }
-            const result = await callChatGPTAPI(prompt);
+            const result = await callChatGPTAPI(prompt, undefined, undefined, 'pronunciation');
             if (!result || !(Array.isArray(result.l) || Array.isArray(result.lines))) {
                 throw new Error('Invalid character pronunciation response');
             }
@@ -1474,7 +1546,9 @@
                 1,
                 extractJSON,
                 requestTimeoutMs,
-                progressParser ? chunk => progressParser.push(chunk) : null
+                progressParser ? chunk => progressParser.push(chunk) : null,
+                null,
+                'research'
             );
         },
 
