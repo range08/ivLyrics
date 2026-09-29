@@ -826,7 +826,7 @@
     };
 
     const normalizeTranslationEntityGlossaryRaw = (value) =>
-        String(value ?? '').replace(/\r\n?/g, '\n').trim();
+        String(value ?? '').replace(/\r\n?/g, '\n');
 
     const parseTranslationEntityGlossary = (value) => {
         const raw = normalizeTranslationEntityGlossaryRaw(value);
