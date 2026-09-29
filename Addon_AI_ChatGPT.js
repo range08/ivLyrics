@@ -1193,6 +1193,153 @@
     // Addon Implementation
     // ============================================
 
+    function isBackgroundGlossaryEnabled() {
+        const value = getSetting('background-glossary-enabled', true);
+        return value === true || value === 'true';
+    }
+
+    function isBackgroundGlossaryWebSearchEnabled() {
+        const value = getSetting('background-glossary-web-search', false);
+        return value === true || value === 'true';
+    }
+
+    function getBackgroundGlossaryModel() {
+        return String(getSetting('background-glossary-model', 'gpt-5.6-terra') || 'gpt-5.6-terra').trim();
+    }
+
+    function buildBackgroundGlossaryPrompt(params = {}) {
+        const targetLanguage = String(params.lang || 'ko').trim();
+        const sourceLanguage = String(params.sourceLang || 'auto').trim();
+        const lyrics = String(params.text || '').slice(0, 16000);
+        const existing = [
+            ...(Array.isArray(params.existingGlossary) ? params.existingGlossary : []),
+            ...(Array.isArray(params.autoGlossary) ? params.autoGlossary : [])
+        ].slice(0, 160).map(entry => ({ source: entry.source, target: entry.target, work: entry.work || '' }));
+        const systemPrompt = `You maintain a conservative localization glossary for anime, game, and music lyrics.
+
+Return JSON only with this shape:
+{"work":"","entities":[{"source":"","target":"","type":"character|organization|location|item|ability|title|franchise|other","confidence":"high|medium"}]}
+
+Rules:
+- Extract only genuine proper nouns or franchise-specific terms that occur in the supplied title, album, artist, or lyrics.
+- target is the established ${targetLanguage} localized form when you know it with high confidence.
+- If no established localization is known, use a natural ${targetLanguage} transliteration rather than translating the dictionary meaning of the name.
+- Omit uncertain guesses. Never invent an official localization.
+- Do not add ordinary vocabulary, grammar, metaphors, or generic nouns.
+- Keep at most 24 useful entities.
+- Do not repeat an entry that is already present in existing_glossary.
+- source must be text that actually appears in the supplied song data.
+- Output JSON only, with no Markdown or explanation.`;
+        const userPrompt = `<song_context>
+${JSON.stringify({
+    title: String(params.title || ''),
+    artist: String(params.artist || ''),
+    album: String(params.album || ''),
+    source_language: sourceLanguage,
+    target_language: targetLanguage
+})}
+</song_context>
+
+<existing_glossary>
+${JSON.stringify(existing)}
+</existing_glossary>
+
+<lyrics>
+${lyrics}
+</lyrics>`;
+        return { systemPrompt, userPrompt };
+    }
+
+    async function collectTranslationEntitiesWithOpenAI(params = {}) {
+        if (!isBackgroundGlossaryEnabled()) return { skipped: true, reason: 'disabled', entities: [] };
+        const baseUrl = getBaseUrl();
+        if (!isOfficialOpenAIBaseUrl(baseUrl)) return { skipped: true, reason: 'non-openai-base-url', entities: [] };
+        const apiKeys = getApiKeys();
+        if (apiKeys.length === 0) return { skipped: true, reason: 'missing-api-key', entities: [] };
+
+        const model = getBackgroundGlossaryModel();
+        const prompt = buildBackgroundGlossaryPrompt(params);
+        const useWebSearch = isBackgroundGlossaryWebSearchEnabled();
+        const requestBody = {
+            model,
+            instructions: prompt.systemPrompt,
+            input: prompt.userPrompt,
+            max_output_tokens: 1400,
+            ...(isReasoningCapableModel(model) ? { reasoning: { effort: 'low' } } : {}),
+            ...(useWebSearch ? { tools: [{ type: 'web_search' }], tool_choice: 'required' } : {}),
+            store: false
+        };
+
+        let lastError = null;
+        for (const apiKey of apiKeys) {
+            let usageReservationId = null;
+            try {
+                const guarded = beginTrackedOpenAIRequest(baseUrl, model, requestBody, 'responses');
+                usageReservationId = guarded.reservationId;
+                const response = await window.ivLyricsFetch(`${normalizeBaseUrl(baseUrl)}/responses`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${apiKey}`
+                    },
+                    body: JSON.stringify(guarded.body)
+                }, Math.max(window.ivLyricsFetch?.DEFAULT_TIMEOUT_MS || 90000, 120000));
+
+                if (response.status === 429 || response.status === 403) {
+                    cancelTrackedOpenAIRequest(baseUrl, usageReservationId);
+                    usageReservationId = null;
+                    continue;
+                }
+                if (!response.ok) {
+                    let errorMessage = `HTTP ${response.status}`;
+                    try {
+                        const errorData = await response.json();
+                        errorMessage = errorData?.error?.message || errorMessage;
+                    } catch {}
+                    throw new Error(`[ChatGPT Background Glossary] ${errorMessage}`);
+                }
+
+                const data = await response.json();
+                completeTrackedOpenAIRequest(baseUrl, model, usageReservationId, data?.usage);
+                usageReservationId = null;
+                const parsed = extractJSON(readResponsesOutputText(data));
+                const haystack = [params.title, params.artist, params.album, params.text]
+                    .map(value => String(value || '').toLocaleLowerCase())
+                    .join('\n');
+                const existingKeys = new Set([
+                    ...(Array.isArray(params.existingGlossary) ? params.existingGlossary : []),
+                    ...(Array.isArray(params.autoGlossary) ? params.autoGlossary : [])
+                ].map(entry => `${String(entry?.work || '').toLocaleLowerCase()}\u0000${String(entry?.source || '').toLocaleLowerCase()}`));
+                const seen = new Set();
+                const entities = (Array.isArray(parsed?.entities) ? parsed.entities : []).map(entry => ({
+                    source: String(entry?.source || '').trim().slice(0, 160),
+                    target: String(entry?.target || '').trim().slice(0, 160),
+                    work: String(entry?.work || parsed?.work || '').trim().slice(0, 160),
+                    type: String(entry?.type || 'other').trim().slice(0, 48),
+                    confidence: String(entry?.confidence || 'medium').toLowerCase() === 'high' ? 'high' : 'medium'
+                })).filter(entry => {
+                    if (!entry.source || !entry.target) return false;
+                    if (!haystack.includes(entry.source.toLocaleLowerCase())) return false;
+                    const key = `${entry.work.toLocaleLowerCase()}\u0000${entry.source.toLocaleLowerCase()}`;
+                    if (existingKeys.has(key) || seen.has(key)) return false;
+                    seen.add(key);
+                    return true;
+                }).slice(0, 24);
+
+                return {
+                    work: String(parsed?.work || '').trim().slice(0, 160),
+                    entities,
+                    webSearch: useWebSearch,
+                    model
+                };
+            } catch (error) {
+                cancelTrackedOpenAIRequest(baseUrl, usageReservationId);
+                lastError = error;
+            }
+        }
+        throw lastError || new Error('[ChatGPT Background Glossary] All API keys failed');
+    }
+
     const ChatGPTAddon = {
         ...ADDON_INFO,
 
