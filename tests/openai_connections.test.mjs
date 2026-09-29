@@ -125,3 +125,94 @@ test('concurrent requests keep their own credentials and ordered connection snap
     assert.equal(first, 'Bearer second-key:second-model');
     assert.equal(second, 'Bearer primary-key:primary-model');
 });
+
+
+test('per-task reasoning controls map to Chat Completions and Responses request fields', async () => {
+    {
+        const h = harness([], () => success('translated'), {
+            model: 'gpt-6-sol',
+            'adv-reasoning-translation': 'low',
+        });
+        const result = await h.addon.translateLyrics({
+            text: 'source',
+            translationPrompt: { systemPrompt: 'translate', userPrompt: 'source' },
+            wantSmartPhonetic: false,
+        });
+        assert.deepEqual(Array.from(result.translation), ['translated']);
+        assert.equal(h.requests[0].body.reasoning_effort, 'low');
+    }
+
+    {
+        const h = harness([], () => success('pronounced'), {
+            model: 'gpt-6-sol',
+            'adv-reasoning-pronunciation': 'high',
+        });
+        const result = await h.addon.translateLyrics({
+            text: 'source',
+            phoneticPrompt: { systemPrompt: 'pronounce', userPrompt: 'source' },
+            wantSmartPhonetic: true,
+        });
+        assert.deepEqual(Array.from(result.phonetic), ['pronounced']);
+        assert.equal(h.requests[0].body.reasoning_effort, 'high');
+    }
+
+    {
+        const h = harness([], () => json(200, {
+            output: [{ content: [{ type: 'output_text', text: '{"summary":"researched"}' }] }],
+        }), {
+            model: 'gpt-6-sol',
+            'adv-reasoning-research': 'medium',
+        });
+        const result = await h.addon.generateTMI({
+            title: 'Fixture title',
+            artist: 'Fixture artist',
+            tmiPrompt: 'research fixture',
+            webSearch: true,
+        });
+        assert.equal(result.summary, 'researched');
+        assert.equal(h.requests[0].body.reasoning.effort, 'medium');
+        assert.equal(h.requests[0].body.reasoning_effort, undefined);
+    }
+});
+
+test('None preserves provider defaults and legacy model compatibility', async () => {
+    const reasoningModel = harness([], () => success('translated'), {
+        model: 'gpt-6-sol',
+        'adv-reasoning-translation': 'none',
+    });
+    await reasoningModel.addon.translateLyrics({
+        text: 'source',
+        translationPrompt: { systemPrompt: 'translate', userPrompt: 'source' },
+        wantSmartPhonetic: false,
+    });
+    assert.equal(reasoningModel.requests[0].body.reasoning_effort, undefined);
+
+    const legacyModel = harness([], () => success('translated'), {
+        model: 'gpt-4o',
+        'adv-reasoning-translation': 'high',
+    });
+    await legacyModel.addon.translateLyrics({
+        text: 'source',
+        translationPrompt: { systemPrompt: 'translate', userPrompt: 'source' },
+        wantSmartPhonetic: false,
+    });
+    assert.equal(legacyModel.requests[0].body.reasoning_effort, undefined);
+});
+
+test('Advanced Body Merge JSON has final precedence over per-task reasoning controls', async () => {
+    const h = harness([], () => success('translated'), {
+        model: 'gpt-6-sol',
+        'adv-reasoning-translation': 'low',
+        'adv-requestBodyMergeJson': JSON.stringify({
+            reasoning_effort: 'high',
+            max_completion_tokens: 1234,
+        }),
+    });
+    await h.addon.translateLyrics({
+        text: 'source',
+        translationPrompt: { systemPrompt: 'translate', userPrompt: 'source' },
+        wantSmartPhonetic: false,
+    });
+    assert.equal(h.requests[0].body.reasoning_effort, 'high');
+    assert.equal(h.requests[0].body.max_completion_tokens, 1234);
+});
