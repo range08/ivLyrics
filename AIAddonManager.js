@@ -1784,6 +1784,7 @@ ${JSON.stringify(payload)}`;
             this._onceEvents = new Map();
             this._marketplaceAddons = new Set(); // 마켓플레이스에서 설치된 에드온 추적
             this._translationEntityCollectionInflight = new Map();
+            this._translationEntityCollectionTail = Promise.resolve();
         }
 
         // ============================================
@@ -1958,20 +1959,27 @@ ${JSON.stringify(payload)}`;
                 return result;
             };
 
-            const promise = new Promise((resolve, reject) => {
-                const start = () => run().then(resolve, reject);
+            const waitForIdle = () => new Promise(resolve => {
                 if (typeof requestIdleCallback === 'function') {
-                    requestIdleCallback(start, { timeout: 5000 });
+                    requestIdleCallback(() => resolve(), { timeout: 5000 });
                 } else {
-                    setTimeout(start, 1500);
+                    setTimeout(resolve, 1500);
                 }
-            }).catch(error => {
-                window.__ivLyricsDebugLog?.('[AIAddonManager] Background entity glossary collection failed:', error?.message);
-                return null;
-            }).finally(() => {
-                this._translationEntityCollectionInflight.delete(key);
             });
+            const previousTail = this._translationEntityCollectionTail.catch(() => null);
+            const promise = previousTail
+                .then(waitForIdle)
+                .then(run)
+                .catch(error => {
+                    window.__ivLyricsDebugLog?.('[AIAddonManager] Background entity glossary collection failed:', error?.message);
+                    return null;
+                }).finally(() => {
+                    this._translationEntityCollectionInflight.delete(key);
+                });
 
+            // Serialize background work so rapidly skipping tracks cannot fan out
+            // multiple model/web-search requests at once.
+            this._translationEntityCollectionTail = promise.catch(() => null);
             this._translationEntityCollectionInflight.set(key, promise);
             return promise;
         }
@@ -2016,7 +2024,7 @@ ${JSON.stringify(payload)}`;
             const providerName = addon?.name || addon?.id || 'unknown';
             const timeoutMs = method === 'generateResearch' || method === 'generateTMI'
                 ? PROVIDER_RESEARCH_TIMEOUT_MS
-                : PROVIDER_OPERATION_TIMEOUT_MS;
+                : (method === 'collectTranslationEntities' ? 150_000 : PROVIDER_OPERATION_TIMEOUT_MS);
             const operation = Promise.resolve().then(() => addon[method](params));
             const timeout = new Promise((_, reject) => {
                 timeoutId = setTimeout(() => {
