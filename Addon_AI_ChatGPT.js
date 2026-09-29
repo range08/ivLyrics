@@ -1666,6 +1666,10 @@ ${lyrics}
             }
         },
 
+        async collectTranslationEntities(params = {}) {
+            return await collectTranslationEntitiesWithOpenAI(params);
+        },
+
         async translateLyrics({ text, lang, wantSmartPhonetic, translationPrompt, phoneticPrompt, onLine, onStreamReset }) {
             if (!text?.trim()) {
                 throw new Error('No text provided');
