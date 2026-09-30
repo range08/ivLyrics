@@ -1,8 +1,35 @@
 (function PlaybarButton() {
+	// Spicetify can reload extension subfiles without a full renderer restart.
+	// Tear down the previous instance first so buttons/listeners/timers do not
+	// accumulate across hot reloads.
+	window.__ivLyricsPlaybarCleanup?.();
+
 	if (!Spicetify.Platform.History) {
-		setTimeout(PlaybarButton, 300);
+		if (window.__ivLyricsPlaybarWaitTimer) {
+			clearTimeout(window.__ivLyricsPlaybarWaitTimer);
+		}
+		window.__ivLyricsPlaybarWaitTimer = setTimeout(() => {
+			window.__ivLyricsPlaybarWaitTimer = null;
+			PlaybarButton();
+		}, 300);
 		return;
 	}
+	if (window.__ivLyricsPlaybarWaitTimer) {
+		clearTimeout(window.__ivLyricsPlaybarWaitTimer);
+		window.__ivLyricsPlaybarWaitTimer = null;
+	}
+
+	let disposed = false;
+	const timers = new Set();
+	const schedule = (callback, delay) => {
+		const timerId = setTimeout(() => {
+			timers.delete(timerId);
+			if (!disposed) callback();
+		}, delay);
+		timers.add(timerId);
+		return timerId;
+	};
+	let unlistenHistory = null;
 
 	// 디버깅을 위한 Spicetify.Playbar API 확인
 	window.__ivLyricsDebugLog?.("[ivLyrics] Spicetify.Playbar available:", !!Spicetify.Playbar);
@@ -54,19 +81,20 @@
 	style.classList.add("ivLyrics:visual:playbar-button");
 
 	if (Spicetify.LocalStorage.get("ivLyrics:visual:playbar-button") === "true") setPlaybarButton();
-	window.addEventListener("ivLyrics", (event) => {
+	const handlePlaybarConfig = (event) => {
 		if (event.detail?.name === "playbar-button") event.detail.value ? setPlaybarButton() : removePlaybarButton();
-	});
+	};
+	window.addEventListener("ivLyrics", handlePlaybarConfig);
 
 	if (button) {
-		Spicetify.Platform.History.listen((location) => {
+		unlistenHistory = Spicetify.Platform.History.listen((location) => {
 			button.active = location.pathname === "/ivLyrics";
 		});
 	}
 
 	function verifyButtonRegistration(callback, retries = 5) {
 		// 버튼이 실제로 DOM에 추가되었는지 확인
-		setTimeout(() => {
+		schedule(() => {
 			const ivLyricsButton = document.querySelector('.main-nowPlayingBar-extraControls button svg path[d*="M13.426 2.574"]');
 			if (ivLyricsButton) {
 				window.__ivLyricsDebugLog?.("[ivLyrics] Playbar button successfully registered");
@@ -161,13 +189,14 @@
 	fullscreenStyle.classList.add("ivLyrics:visual:fullscreen-button");
 
 	if (Spicetify.LocalStorage.get("ivLyrics:visual:fullscreen-button") === "true") setFullscreenButton();
-	window.addEventListener("ivLyrics", (event) => {
+	const handleFullscreenConfig = (event) => {
 		if (event.detail?.name === "fullscreen-button") event.detail.value ? setFullscreenButton() : removeFullscreenButton();
-	});
+	};
+	window.addEventListener("ivLyrics", handleFullscreenConfig);
 
 	function verifyFullscreenButtonRegistration(callback, retries = 5) {
 		// 전체화면 버튼이 실제로 DOM에 추가되었는지 확인
-		setTimeout(() => {
+		schedule(() => {
 			const ivLyricsFullscreenButton = document.querySelector('.main-nowPlayingBar-extraControls button svg path[d*="M0.25 3C0.25"]');
 			if (ivLyricsFullscreenButton) {
 				window.__ivLyricsDebugLog?.("[ivLyrics] Fullscreen button successfully registered");
@@ -194,7 +223,7 @@
 				if (success) {
 					document.head.appendChild(fullscreenStyle);
 					// 버튼에 고유 클래스 추가하여 CSS로 위치 조정 가능하게 함
-					setTimeout(() => {
+					schedule(() => {
 						// Spicetify.Playbar.Button의 내부 element 속성 사용 시도
 						if (fullscreenButton.element) {
 							fullscreenButton.element.classList.add('ivlyrics-fullscreen-btn');
@@ -232,4 +261,21 @@
 			} catch (e) { /* ignore */ }
 		}
 	}
+
+	window.__ivLyricsPlaybarCleanup = () => {
+		if (disposed) return;
+		disposed = true;
+		for (const timerId of timers) clearTimeout(timerId);
+		timers.clear();
+		window.removeEventListener("ivLyrics", handlePlaybarConfig);
+		window.removeEventListener("ivLyrics", handleFullscreenConfig);
+		if (typeof unlistenHistory === "function") {
+			try {
+				unlistenHistory();
+			} catch (e) { /* ignore */ }
+		}
+		unlistenHistory = null;
+		removePlaybarButton();
+		removeFullscreenButton();
+	};
 })();

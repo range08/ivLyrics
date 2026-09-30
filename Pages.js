@@ -2310,9 +2310,15 @@ const getTrackPositionFPS = () => {
 
 const getPositionQuantizeMs = () => Math.max(1, Math.round(1000 / getTrackPositionFPS()));
 
-const getCurrentLyricsPlaybackPosition = (trackOffset = 0, globalOffset = getGlobalSyncOffsetValue()) => {
-	const newPos = window.Utils?.getSafePlayerProgress?.()
-		?? (Spicetify.Player?.getProgress?.() || 0);
+const getCurrentLyricsPlaybackPosition = (
+	trackOffset = 0,
+	globalOffset = getGlobalSyncOffsetValue(),
+	sampledProgress = null
+) => {
+	const newPos = Number.isFinite(sampledProgress)
+		? sampledProgress
+		: (window.Utils?.getSafePlayerProgress?.()
+			?? (Spicetify.Player?.getProgress?.() || 0));
 	const delay = CONFIG.visual.delay + trackOffset + globalOffset;
 	const quantizeMs = getPositionQuantizeMs();
 	return Math.round((newPos + delay) / quantizeMs) * quantizeMs;
@@ -2328,8 +2334,8 @@ const useLyricsPlaybackPosition = () => {
 		setPosition((prev) => (prev === next ? prev : next));
 	}, [trackOffset, globalOffset]);
 
-	useTrackPosition(() => {
-		const next = getCurrentLyricsPlaybackPosition(trackOffset, globalOffset);
+	useTrackPosition((sampledProgress) => {
+		const next = getCurrentLyricsPlaybackPosition(trackOffset, globalOffset, sampledProgress);
 		setPosition((prev) => (prev === next ? prev : next));
 	});
 
@@ -6887,13 +6893,16 @@ const AnimationManager = {
 			this.settleUntil = now + 1200;
 		}
 		const player = Spicetify.Player;
+		const sampledProgress = window.Utils?.getSafePlayerProgress?.()
+			?? player?.getProgress?.()
+			?? 0;
 		const paused = Spicetify.Platform?.PlayerAPI?._state?.isPaused
 			?? player?.data?.isPaused
 			?? (typeof player?.isPlaying === "function" ? !player.isPlaying() : false);
 		if (paused) {
 			// Keep a low-frequency seek safety check for Spotify versions that do
 			// not emit a seek event, without running every lyric callback at rest.
-			const signature = `${player?.data?.item?.uri || ""}:${player?.getProgress?.()}`;
+			const signature = `${player?.data?.item?.uri || ""}:${sampledProgress}`;
 			if (signature !== this.pausedSignature) {
 				this.pausedSignature = signature;
 				this.settleUntil = now + 1200;
@@ -6915,7 +6924,10 @@ const AnimationManager = {
 		if (elapsed >= this.frameInterval - 1) {
 			for (const callback of this.callbacks) {
 				try {
-					callback();
+					// All lyric surfaces consume the same player sample for this
+					// frame. This avoids repeated Spotify/clock reads when normal,
+					// fullscreen and vinyl surfaces are mounted together.
+					callback(sampledProgress);
 				} catch (error) {
 					// Error ignored
 				}
@@ -6988,9 +7000,9 @@ const useTrackPosition = (callback) => {
 		mountedRef.current = true;
 		isActiveRef.current = true;
 
-		const wrappedCallback = () => {
+		const wrappedCallback = (sampledProgress) => {
 			if (mountedRef.current && isActiveRef.current && callbackRef.current) {
-				callbackRef.current();
+				callbackRef.current(sampledProgress);
 			}
 		};
 

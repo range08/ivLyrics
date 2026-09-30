@@ -17,14 +17,14 @@ const surface = () => {
 };
 
 function animationHarness() {
-  let now = 0, next = 0, callbacks = 0;
+  let now = 0, next = 0, callbacks = 0, progressReads = 0;
   const jobs = new Map();
   const window = surface(), document = Object.assign(surface(), {
     hidden: false, documentElement: { classList: { contains: () => false } },
   });
   const player = Object.assign(surface(), {
     data: { isPaused: true, item: { uri: 'one' } }, position: 1000,
-    getProgress() { return this.position; },
+    getProgress() { progressReads++; return this.position; },
   });
   const schedule = (fn, delay) => { jobs.set(++next, { fn, time: now + delay }); return next; };
   const context = vm.createContext({ window, document, Spicetify: { Player: player },
@@ -37,7 +37,7 @@ function animationHarness() {
   const manager = context.manager;
   const callback = () => callbacks++;
   manager.addCallback(callback);
-  return { manager, player, window, document, jobs, callback, get callbacks() { return callbacks; },
+  return { manager, player, window, document, jobs, callback, get callbacks() { return callbacks; }, get progressReads() { return progressReads; },
     advance(ms) {
       const until = now + ms;
       while (true) {
@@ -83,6 +83,31 @@ test('hidden/visible and a newly mounted lyric subscriber wake an idle manager',
   let mounted = 0; h.manager.addCallback(() => mounted++); h.advance(20);
   assert.ok(mounted > 0);
   h.manager.stop();
+});
+
+test('one player progress sample feeds every lyric subscriber in a frame', () => {
+  const h = animationHarness();
+  h.manager.removeCallback(h.callback);
+  h.player.data.isPaused = false;
+
+  const samplesA = [];
+  const samplesB = [];
+  const callbackA = value => samplesA.push(value);
+  const callbackB = value => samplesB.push(value);
+  h.manager.addCallback(callbackA);
+  h.manager.addCallback(callbackB);
+
+  const beforeReads = h.progressReads;
+  h.advance(100);
+  const frameReads = h.progressReads - beforeReads;
+
+  assert.ok(samplesA.length >= 5);
+  assert.equal(samplesA.length, samplesB.length);
+  assert.equal(frameReads, samplesA.length, 'player progress must be sampled once per rendered frame');
+  assert.ok(samplesA.every(value => value === h.player.position));
+  h.manager.removeCallback(callbackA);
+  h.manager.removeCallback(callbackB);
+  assert.equal(h.jobs.size, 0);
 });
 
 test('precise local samples use idle cadence when paused and preserve fresh seek samples', async () => {
