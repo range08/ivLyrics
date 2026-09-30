@@ -46,8 +46,12 @@ const createHarness = () => {
   let stableTrack;
   const emptyState = vm.runInNewContext(`(${source.match(/const emptyState = (\{[\s\S]*?\n\});/)[1]})`);
   const config = { modes: ["karaoke", "synced", "unsynced"], visual: {} };
+  const memoryCache = {};
   const context = vm.createContext({
-    console, emptyState, CONFIG: config, SYNCED: 1, CACHE: {},
+    console, emptyState, CONFIG: config, SYNCED: 1, CACHE: memoryCache,
+    rememberLyricsMemoryCache: (uri, value) => (memoryCache[uri] = value),
+    touchLyricsMemoryCache: uri => memoryCache[uri] || null,
+    forgetLyricsMemoryCache: uri => delete memoryCache[uri],
     Utils: { extractTrackId: uri => uri?.split(":").at(-1), detectLanguage: () => "en" },
     Spicetify: { Player: { data: { item: currentTrack } } },
     getLyricsDataMode: mode => mode,

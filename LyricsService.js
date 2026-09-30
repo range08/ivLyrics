@@ -2339,6 +2339,45 @@
         // fan-out; persistent and session timing caches remain identity-redacted.
         const RECENT_SYNC_DATA_RESPONSE_TTL_MS = 15 * 1000;
         const ISRC_LOOKUP_SUCCESS_TTL_MS = 24 * 60 * 60 * 1000;
+        const MAX_SYNC_DATA_CACHE_ENTRIES = 72;
+        const MAX_ISRC_LOOKUP_CACHE_ENTRIES = 128;
+        const MAX_SYNC_TRACK_STATE_ENTRIES = 128;
+        const MAX_SERVER_BYPASS_ENTRIES = 64;
+
+        const setBoundedMapEntry = (map, key, value, maxEntries) => {
+            if (map.has(key)) map.delete(key);
+            map.set(key, value);
+            while (map.size > maxEntries) {
+                map.delete(map.keys().next().value);
+            }
+            return value;
+        };
+
+        const getRecentMapEntry = (map, key) => {
+            if (!map.has(key)) return undefined;
+            const value = map.get(key);
+            map.delete(key);
+            map.set(key, value);
+            return value;
+        };
+
+        const addBoundedSetEntry = (set, value, maxEntries) => {
+            if (set.has(value)) set.delete(value);
+            set.add(value);
+            while (set.size > maxEntries) {
+                set.delete(set.values().next().value);
+            }
+        };
+
+        const setSyncDataCache = (key, value) =>
+            setBoundedMapEntry(_syncDataCache, key, value, MAX_SYNC_DATA_CACHE_ENTRIES);
+        const getSyncDataCache = (key) => getRecentMapEntry(_syncDataCache, key);
+        const setIsrcLookupCache = (key, value) =>
+            setBoundedMapEntry(_isrcLookupCache, key, value, MAX_ISRC_LOOKUP_CACHE_ENTRIES);
+        const getIsrcLookupCache = (key) => getRecentMapEntry(_isrcLookupCache, key);
+        const rememberSyncMetadataReport = (key) =>
+            addBoundedSetEntry(_syncTrackMetadataReported, key, MAX_SYNC_TRACK_STATE_ENTRIES);
+
         const OPENDB_BASE_URL = 'https://ivlis.kr/ivLyrics/opendb/';
         const OPENDB_MANIFEST_URL = `${OPENDB_BASE_URL}data/manifest.json`;
         const OPENDB_STORAGE_KEY = 'ivLyrics:sync-data-opendb:v1';
@@ -2448,7 +2487,7 @@
                 _syncDataCacheGeneration += 1;
                 return;
             }
-            _trackCacheGenerations.set(identityKey, (_trackCacheGenerations.get(identityKey) || 0) + 1);
+            setBoundedMapEntry(_trackCacheGenerations, identityKey, (_trackCacheGenerations.get(identityKey) || 0) + 1, MAX_SYNC_TRACK_STATE_ENTRIES);
         }
 
         function clearInflightRequests(identityKey) {
@@ -2469,7 +2508,7 @@
                 _serverCacheBypassAllUntil = expiresAt;
                 return;
             }
-            _serverCacheBypassUntil.set(identityKey, expiresAt);
+            setBoundedMapEntry(_serverCacheBypassUntil, identityKey, expiresAt, MAX_SERVER_BYPASS_ENTRIES);
         }
 
         function shouldBypassServerCache(identityKey) {
@@ -2745,7 +2784,7 @@
             });
             if (localIsrc) {
                 if (normalizedTrackId) {
-                    _isrcLookupCache.set(normalizedTrackId, {
+                    setIsrcLookupCache(normalizedTrackId, {
                         isrc: localIsrc,
                         expiresAt: Date.now() + ISRC_LOOKUP_SUCCESS_TTL_MS
                     });
@@ -2765,7 +2804,7 @@
                 return '';
             }
 
-            const cached = _isrcLookupCache.get(normalizedTrackId);
+            const cached = getIsrcLookupCache(normalizedTrackId);
             if (cached && cached.expiresAt > Date.now()) {
                 if (cached.isrc) {
                     syncDataConsoleLog('resolveTrackIsrc:cache-hit', {
@@ -2808,7 +2847,7 @@
                         isrc: resolvedIsrc || null
                     }, resolvedIsrc ? 'info' : 'warn');
                     if (resolvedIsrc) {
-                        _isrcLookupCache.set(normalizedTrackId, {
+                        setIsrcLookupCache(normalizedTrackId, {
                             isrc: resolvedIsrc,
                             expiresAt: Date.now() + ISRC_LOOKUP_SUCCESS_TTL_MS
                         });
@@ -2840,7 +2879,7 @@
             const isrc = normalizeSyncDataIsrc(isrcValue);
             if (!normalizedTrackId || !isrc) return '';
 
-            _isrcLookupCache.set(normalizedTrackId, {
+            setIsrcLookupCache(normalizedTrackId, {
                 isrc,
                 expiresAt: Date.now() + ISRC_LOOKUP_SUCCESS_TTL_MS
             });
@@ -3564,7 +3603,7 @@
             const cacheKey = `${identityKey}:providers`;
 
             if (_syncDataCache.has(cacheKey)) {
-                const cachedProviders = _syncDataCache.get(cacheKey);
+                const cachedProviders = getSyncDataCache(cacheKey);
                 if (Array.isArray(cachedProviders) && cachedProviders.length === 0) {
                     _syncDataCache.delete(cacheKey);
                 } else {
@@ -3594,7 +3633,7 @@
                         count: openDbProviders.length
                     });
                     if (openDbProviders.length > 0) {
-                        _syncDataCache.set(cacheKey, openDbProviders);
+                        setSyncDataCache(cacheKey, openDbProviders);
                     }
                     return openDbProviders;
                 }
@@ -3637,17 +3676,17 @@
                     const result = await response.json();
                     const resolvedIsrc = normalizeSyncDataIsrc(result?.isrc || result?.data?.isrc);
                     if (resolvedIsrc && identity.trackId) {
-                        _isrcLookupCache.set(identity.trackId, {
+                        setIsrcLookupCache(identity.trackId, {
                             isrc: resolvedIsrc,
                             expiresAt: Date.now() + ISRC_LOOKUP_SUCCESS_TTL_MS
                         });
                     }
                     if (reportsMetadata) {
-                        _syncTrackMetadataReported.add(identityKey);
+                        rememberSyncMetadataReport(identityKey);
                     }
                     const providers = Array.isArray(result.providers) ? result.providers : [];
                     if (requestGeneration === getCacheGeneration(identityKey)) {
-                        _syncDataCache.set(cacheKey, providers);
+                        setSyncDataCache(cacheKey, providers);
                     }
                     return providers;
                 })();
@@ -3710,7 +3749,7 @@
             }
 
             if (!forceContributorRefresh && _syncDataCache.has(specificKey)) {
-                const cachedSyncData = _syncDataCache.get(specificKey);
+                const cachedSyncData = getSyncDataCache(specificKey);
                 if (!hasRedactedSyncDataContributorIdentity(cachedSyncData)) {
                     syncDataConsoleLog('getSyncData:cache-hit', {
                         isrc: identity.isrc || null,
@@ -3814,7 +3853,7 @@
                         providerReturned: result?.data?.provider || result?.provider || null
                     });
                     if (reportsMetadata) {
-                        _syncTrackMetadataReported.add(identityKey);
+                        rememberSyncMetadataReport(identityKey);
                     }
                     const data = result.data || result;
 
@@ -3834,7 +3873,7 @@
                         const resolvedIsrc = normalizeSyncDataIsrc(data.isrc) || identity.isrc;
                         const resolvedTrackId = identity.trackId || data.trackId || data.storedTrackId || null;
                         if (resolvedIsrc && resolvedTrackId) {
-                            _isrcLookupCache.set(resolvedTrackId, {
+                            setIsrcLookupCache(resolvedTrackId, {
                                 isrc: resolvedIsrc,
                                 expiresAt: Date.now() + ISRC_LOOKUP_SUCCESS_TTL_MS
                             });
@@ -3858,12 +3897,12 @@
                         }
                         rememberRecentSyncDataResponse(specificKey, syncData);
                         const cachedSyncData = redactSyncDataForRuntimeCache(syncData);
-                        _syncDataCache.set(specificKey, cachedSyncData);
+                        setSyncDataCache(specificKey, cachedSyncData);
                         if (resolvedIsrc) {
-                            _syncDataCache.set(`${resolvedIsrc}:${queryProvider}`, cachedSyncData);
+                            setSyncDataCache(`${resolvedIsrc}:${queryProvider}`, cachedSyncData);
                         }
                         if (resolvedTrackId) {
-                            _syncDataCache.set(`track:${resolvedTrackId}:${queryProvider}`, cachedSyncData);
+                            setSyncDataCache(`track:${resolvedTrackId}:${queryProvider}`, cachedSyncData);
                         }
                         return syncData;
                     }
@@ -4105,7 +4144,7 @@
 
             const resolvedResultIsrc = normalizeSyncDataIsrc(result?.isrc || result?.data?.isrc);
             if (resolvedResultIsrc && identity.trackId) {
-                _isrcLookupCache.set(identity.trackId, {
+                setIsrcLookupCache(identity.trackId, {
                     isrc: resolvedResultIsrc,
                     expiresAt: Date.now() + ISRC_LOOKUP_SUCCESS_TTL_MS
                 });
@@ -5635,6 +5674,24 @@
         const _analysisCache = new Map();
         const _inflightAnalysis = new Map();
         const _analysisHintsCache = new WeakMap();
+        const MAX_ANALYSIS_CACHE_ENTRIES = 8;
+
+        const getCachedAudioAnalysis = (trackId) => {
+            if (!_analysisCache.has(trackId)) return undefined;
+            const analysis = _analysisCache.get(trackId);
+            _analysisCache.delete(trackId);
+            _analysisCache.set(trackId, analysis);
+            return analysis;
+        };
+
+        const cacheAudioAnalysis = (trackId, analysis) => {
+            if (_analysisCache.has(trackId)) _analysisCache.delete(trackId);
+            _analysisCache.set(trackId, analysis);
+            while (_analysisCache.size > MAX_ANALYSIS_CACHE_ENTRIES) {
+                _analysisCache.delete(_analysisCache.keys().next().value);
+            }
+            return analysis;
+        };
         const PSEUDO_SOURCES = new Set([
             'audio-analysis-pseudo',
             'spotify-audio-analysis',
@@ -5763,7 +5820,8 @@
 
         async function getAudioAnalysis(trackId) {
             if (!trackId) return null;
-            if (_analysisCache.has(trackId)) return _analysisCache.get(trackId);
+            const cachedAnalysis = getCachedAudioAnalysis(trackId);
+            if (cachedAnalysis !== undefined) return cachedAnalysis;
             if (_inflightAnalysis.has(trackId)) return _inflightAnalysis.get(trackId);
 
             const promise = (async () => {
@@ -5772,7 +5830,7 @@
                         return null;
                     }
                     const analysis = await Spicetify.getAudioData(`spotify:track:${trackId}`);
-                    _analysisCache.set(trackId, analysis);
+                    cacheAudioAnalysis(trackId, analysis);
                     return analysis;
                 } catch (error) {
                     window.__ivLyricsDebugLog?.('[PseudoKaraokeService] Audio analysis fetch failed', error);

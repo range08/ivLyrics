@@ -3247,6 +3247,50 @@ window.ivLyricsSpeakerColors?.applyCssVariables?.();
 
 let CACHE = {};
 
+// Raw lyric objects can be large (karaoke timings, translations, speaker
+// metadata, etc.). Keep only a bounded working set for long Spotify sessions.
+const MAX_LYRICS_MEMORY_CACHE_ENTRIES = 16;
+const lyricsMemoryCacheOrder = new Map();
+
+const pruneLyricsMemoryCache = () => {
+  while (lyricsMemoryCacheOrder.size > MAX_LYRICS_MEMORY_CACHE_ENTRIES) {
+    const oldestUri = lyricsMemoryCacheOrder.keys().next().value;
+    lyricsMemoryCacheOrder.delete(oldestUri);
+    delete CACHE[oldestUri];
+  }
+};
+
+const rememberLyricsMemoryCache = (uri, value) => {
+  if (!uri) return value;
+  CACHE[uri] = value;
+  lyricsMemoryCacheOrder.delete(uri);
+  lyricsMemoryCacheOrder.set(uri, true);
+  pruneLyricsMemoryCache();
+  return value;
+};
+
+const touchLyricsMemoryCache = (uri) => {
+  const value = uri ? CACHE[uri] : null;
+  if (!value) {
+    if (uri) lyricsMemoryCacheOrder.delete(uri);
+    return value || null;
+  }
+  lyricsMemoryCacheOrder.delete(uri);
+  lyricsMemoryCacheOrder.set(uri, true);
+  return value;
+};
+
+const forgetLyricsMemoryCache = (uri) => {
+  if (!uri) return false;
+  lyricsMemoryCacheOrder.delete(uri);
+  return delete CACHE[uri];
+};
+
+const clearLyricsMemoryCache = () => {
+  lyricsMemoryCacheOrder.clear();
+  Object.keys(CACHE).forEach((key) => delete CACHE[key]);
+};
+
 const emptyState = {
   karaoke: null,
   karaokeGranularity: null,
@@ -3499,10 +3543,15 @@ const CacheManager = {
 
   clear() {
     this._cache.clear();
+  },
+
+  destroy() {
+    this.clear();
     if (this._cleanupTimer) {
       clearInterval(this._cleanupTimer);
       this._cleanupTimer = null;
     }
+    this._initialized = false;
   },
 
   // Clear cache entries for a specific URI
@@ -3541,6 +3590,7 @@ window.CACHE = CACHE;
 // Rate limiting utility
 const RateLimiter = {
   _calls: new Map(),
+  _maxKeys: 128,
 
   canMakeCall(key, maxCalls = 5, windowMs = 60000) {
     const now = Date.now();
@@ -3561,7 +3611,11 @@ const RateLimiter = {
     }
 
     validCalls.push(now);
+    if (this._calls.has(key)) this._calls.delete(key);
     this._calls.set(key, validCalls);
+    while (this._calls.size > this._maxKeys) {
+      this._calls.delete(this._calls.keys().next().value);
+    }
     return true;
   },
 };
@@ -3639,6 +3693,7 @@ window.SpotifyDataHelper = SpotifyDataHelper;
 const Prefetcher = {
   _prefetchCache: new Map(),
   _inflightRequests: new Map(),
+  _maxCacheEntries: 48,
   _lastPrefetchedUri: null,
   _prefetchDelay: 1500, // 1.5초 지연 후 프리페치 시작
   _prefetchTimer: null,
@@ -3649,6 +3704,14 @@ const Prefetcher = {
    */
   setLyricsContainer(container) {
     this._lyricsContainer = container;
+  },
+
+  _setPrefetchCache(key, value) {
+    if (this._prefetchCache.has(key)) this._prefetchCache.delete(key);
+    this._prefetchCache.set(key, value);
+    while (this._prefetchCache.size > this._maxCacheEntries) {
+      this._prefetchCache.delete(this._prefetchCache.keys().next().value);
+    }
   },
 
   /**
@@ -3714,9 +3777,10 @@ const Prefetcher = {
     const uri = trackInfo.uri;
 
     // 이미 CACHE에 있으면 반환
-    if (CACHE[uri]) {
+    const cachedLyrics = touchLyricsMemoryCache(uri);
+    if (cachedLyrics) {
       ivLyricsDebug(`[Prefetcher] Lyrics already cached for: ${trackInfo.title}`);
-      return CACHE[uri];
+      return cachedLyrics;
     }
 
     // 이미 요청 중이면 기존 요청 반환
@@ -3740,7 +3804,7 @@ const Prefetcher = {
 
         if (resp?.provider) {
           // 가사 캐시에 저장
-          CACHE[resp.uri] = resp;
+          rememberLyricsMemoryCache(resp.uri, resp);
           ivLyricsDebug(`[Prefetcher] Lyrics cached for: ${trackInfo.title} (provider: ${resp.provider})`);
           return resp;
         }
@@ -3928,7 +3992,7 @@ const Prefetcher = {
         }
 
         // 결과를 프리페치 캐시에 저장 (완료 표시용)
-        this._prefetchCache.set(versionedCacheKeyBase, {
+        this._setPrefetchCache(versionedCacheKeyBase, {
           lyricsArray,
           displayMode1,
           displayMode2,
@@ -4033,12 +4097,12 @@ const Prefetcher = {
           if (resolvedIsrc) {
             window.SyncDataService?.rememberTrackIsrc?.(trackId, resolvedIsrc);
           }
-          this._prefetchCache.set(cacheKey, {
+          this._setPrefetchCache(cacheKey, {
             data: data.data,
             timestamp: Date.now(),
           });
           if (resolvedIsrc) {
-            this._prefetchCache.set(`prefetch:video:${resolvedIsrc}`, {
+            this._setPrefetchCache(`prefetch:video:${resolvedIsrc}`, {
               data: data.data,
               timestamp: Date.now(),
             });
@@ -4111,7 +4175,7 @@ const Prefetcher = {
         },
         onComplete: (url) => {
           ivLyricsDebug(`[Prefetcher] Helper prefetch complete for: ${videoId}`);
-          this._prefetchCache.set(helperCacheKey, {
+          this._setPrefetchCache(helperCacheKey, {
             videoId: videoId,
             url: url,
             timestamp: Date.now(),
@@ -6735,7 +6799,7 @@ class LyricsContainer extends react.Component {
       }
 
       this.trackLyricsProviderOverride = normalizedProviderId;
-      delete CACHE[trackUri];
+      forgetLyricsMemoryCache(trackUri);
       if (this._dmResults?.[trackUri]) {
         delete this._dmResults[trackUri];
       }
@@ -7072,10 +7136,10 @@ class LyricsContainer extends react.Component {
 
       // Refresh: Clear memory cache for this track to force re-fetch from providers
       if (refresh && CACHE[info.uri]) {
-        delete CACHE[info.uri];
+        forgetLyricsMemoryCache(info.uri);
       }
       if (hasSpotifyTrackId && CACHE[info.uri] && (CACHE[info.uri].trackLyricsProviderOverride || null) !== (trackLyricsProviderOverride || null)) {
-        delete CACHE[info.uri];
+        forgetLyricsMemoryCache(info.uri);
       }
 
       let isCached = this.lyricsSaved(info.uri);
@@ -7091,7 +7155,7 @@ class LyricsContainer extends react.Component {
           if (window.PseudoKaraokeService?.applyToResult) {
             await window.PseudoKaraokeService.applyToResult(restoredLocalLyrics, info);
           }
-          CACHE[info.uri] = restoredLocalLyrics;
+          rememberLyricsMemoryCache(info.uri, restoredLocalLyrics);
           isCached = true;
         }
       }
@@ -7126,24 +7190,25 @@ class LyricsContainer extends react.Component {
         });
 
       if (canReuseSharedRawResult) {
-        CACHE[info.uri] = {
+        rememberLyricsMemoryCache(info.uri, {
           ...sharedRawResult,
           uri: info.uri,
           trackLyricsProviderOverride: trackLyricsProviderOverride || null,
-        };
+        });
       }
       if (CACHE[info.uri] && !isLyricsRenderCacheCurrent(CACHE[info.uri])) {
-        delete CACHE[info.uri];
+        forgetLyricsMemoryCache(info.uri);
       }
       // if lyrics are cached
+      const memoryCachedLyrics = touchLyricsMemoryCache(info.uri);
       if (
-        (mode === -1 && CACHE[info.uri]) ||
-        CACHE[info.uri]?.[CONFIG.modes?.[getLyricsDataMode(mode)]]
+        (mode === -1 && memoryCachedLyrics) ||
+        memoryCachedLyrics?.[CONFIG.modes?.[getLyricsDataMode(mode)]]
       ) {
         tempState = {
           provider: "",
           contributors: null,
-          ...CACHE[info.uri],
+          ...memoryCachedLyrics,
           ...(canReuseSharedRawResult && sharedDisplayLyrics
             ? { currentLyrics: sharedDisplayLyrics }
             : {}),
@@ -7153,7 +7218,7 @@ class LyricsContainer extends react.Component {
           isLoading: false,
           isCached,
         };
-        const cachedMode = CACHE[info.uri]?.mode;
+        const cachedMode = memoryCachedLyrics?.mode;
         if (typeof cachedMode === "number" && cachedMode !== -1) {
           tempState = { ...tempState, mode: cachedMode };
         }
@@ -7188,10 +7253,10 @@ class LyricsContainer extends react.Component {
 
         if (resp.provider) {
           // Cache lyrics
-          CACHE[resp.uri] = {
+          rememberLyricsMemoryCache(resp.uri, {
             ...resp,
             trackLyricsProviderOverride: trackLyricsProviderOverride || null,
-          };
+          });
         }
 
         // This True when the user presses the Cache Lyrics button and saves it to localStorage.
@@ -8755,10 +8820,10 @@ class LyricsContainer extends react.Component {
       delete this._dmResults[currentUri];
     }
 
-    CACHE[currentUri] = {
+    rememberLyricsMemoryCache(currentUri, {
       ...nextLyrics,
       trackLyricsProviderOverride: null,
-    };
+    });
     window.LyricsService?.clearLyricsSnapshot?.(currentUri);
     window.LyricsService?.publishLyricsSnapshot?.({
       trackUri: currentUri,
@@ -9167,7 +9232,7 @@ class LyricsContainer extends react.Component {
       ivLyricsDebug("[ivLyrics] Reloading lyrics...", { trackId: Spicetify.Player.data?.item?.uri, clearCache });
 
       // 메모리 캐시는 항상 초기화 (window.CACHE와의 참조를 유지하기 위해 객체의 키만 삭제)
-      Object.keys(CACHE).forEach(key => delete CACHE[key]);
+      clearLyricsMemoryCache();
 
       // 현재 트랙 정보
       const item = Spicetify.Player.data?.item;
@@ -9576,7 +9641,7 @@ class LyricsContainer extends react.Component {
     this.pendingStreamingPayload = null;
 
     // Clean up cache system
-    CacheManager.clear();
+    CacheManager.destroy();
 
     // Clear DOM cache
     if (this._domCache) {
